@@ -1,0 +1,3 @@
+[submodule "skills/pr-review-agent-skills"]
+	path = skills/pr-review-agent-skills
+	url = https://github.com/BerriAI/pr-review-agent-skills
