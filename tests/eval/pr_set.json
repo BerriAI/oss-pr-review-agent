@@ -1,0 +1,151 @@
+{
+  "_about": "Curated 20-PR eval set for the litellm-bot PR-review agent. Mix of merged/open, dependency bumps/feature work, clean/conflicting, drafts and non-drafts. Each entry carries a `human_label` (ready/not_ready/null) and `human_notes` from a hand-grading pass — the runner uses those to compute an agree/disagree matrix against the agent's verdict in summary.md. Edit notes when adding new entries.",
+  "repo": "BerriAI/litellm",
+  "_label_legend": {
+    "ready": "Human grader judged the PR ready for review (would map to agent verdict READY).",
+    "not_ready": "Human grader judged the PR NOT ready for review (would map to agent verdict BLOCKED, or WAITING when the only blocker is in-progress checks).",
+    "null": "Not yet graded by a human — agent verdict shown but no agree/disagree contribution to the matrix."
+  },
+  "prs": [
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26451",
+      "category": "merge_conflicts",
+      "notes": "Confirmed dirty merge state at sample time. Exercises the has_merge_conflicts=true rubric blocker. Same PR cited in tests/test_fuse.py for the silent-failure regression.",
+      "human_label": "ready",
+      "human_notes": "Everything passing, but scorer should call out code-quality checks failing (for an unrelated reason)."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/25609",
+      "category": "merge_conflicts",
+      "notes": "Second confirmed-dirty PR. Two conflict cases let us see if the conflict-blocker fires consistently or if scoring drifts.",
+      "human_label": "not_ready",
+      "human_notes": "Merge conflicts."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26505",
+      "category": "open_unknown",
+      "notes": "mergeable=None at sample time. Tri-state has_merge_conflicts=null path (must NOT block on slow-computing GitHub mergeability).",
+      "human_label": "not_ready",
+      "human_notes": "3/5 on Greptile."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26500",
+      "category": "open_clean",
+      "notes": "mergeable_state=clean. Baseline non-conflict open PR — closest thing to an ideal READY input.",
+      "human_label": "ready",
+      "human_notes": "Everything passing, code looks fine, but requires additional look. Might be bloated."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26447",
+      "category": "open_unstable",
+      "notes": "mergeable_state=unstable: branch is mergeable but at least one check is failing. Tests whether the agent buckets that failure as PR-related vs unrelated.",
+      "human_label": "not_ready",
+      "human_notes": "Adds dependencies."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26485",
+      "category": "open_blocked",
+      "notes": "mergeable_state=blocked (likely missing required review/approval). Tests the agent's behavior when GitHub flags non-conflict-non-CI blockers.",
+      "human_label": null,
+      "human_notes": "Not yet graded by a human."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26415",
+      "category": "open_integration",
+      "notes": "Mavvrik integration — net-new provider. Cold-start exercise for the pattern reviewer's sibling-file checks (it has to find existing provider patterns to compare against).",
+      "human_label": "not_ready",
+      "human_notes": "Changes a lot of files. Veria raising security issues. Code-QA checks failing because of PR."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26471",
+      "category": "open_feature",
+      "notes": "Per-model team member budgets. Multi-file feature change spanning auth + DB + API surface; expect pattern findings.",
+      "human_label": "not_ready",
+      "human_notes": "3/5 on Greptile."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26517",
+      "category": "open_mcp_feature",
+      "notes": "Non-admin MCP self-service (disconnect, approval filter). Multi-component change exercising MCP code paths.",
+      "human_label": "not_ready",
+      "human_notes": "3/5 on Greptile."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26474",
+      "category": "open_guardrail",
+      "notes": "Bedrock guardrail dedupe fix when only post_call is configured. Small focused defensive fix.",
+      "human_label": "ready",
+      "human_notes": "Well explained, passing testing, Greptile is 5/5, no Veria issues."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26506",
+      "category": "open_arize_fix",
+      "notes": "Arize: handle raw OpenAI Pydantic CompletionUsage in _set_usage_outputs. Type-handling defensive fix.",
+      "human_label": "ready",
+      "human_notes": "Checks pass, Greptile score is 4/5+, Veria issue is low."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26284",
+      "category": "open_lint_fix",
+      "notes": "Lint url encodings — small surface, expect READY-ish unless infra checks fire.",
+      "human_label": "not_ready",
+      "human_notes": "4/5 on Greptile, no Veria issues, CircleCI unrelated failing test (1 failed due to infra failure — seems to be impacting other PRs too, so not code related). Unclear what problem this fixed. The approach was very brittle. I think this would lead to errors on new code paths."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26511",
+      "category": "merged_ci",
+      "notes": "Merged: CI supply-chain guard for fork PRs. .github/workflows-only diff — should classify as no-runtime-impact.",
+      "human_label": "not_ready",
+      "human_notes": "4/5 on Greptile, CircleCI unrelated failing test (1 failed due to infra failure — seems to be impacting other PRs too). Veria — no security risk."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26122",
+      "category": "merged_ollama_fix",
+      "notes": "Merged: ollama tool_call/tool_call_id passthrough. Provider transform fix with tests.",
+      "human_label": "ready",
+      "human_notes": "5/5 on Greptile, low Veria issues, all tests passing, code fix looks small and reasonable for the issue."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26385",
+      "category": "merged_dedupe",
+      "notes": "Merged: removes a duplicate constant. Trivial diff baseline — pattern reviewer should find ~nothing.",
+      "human_label": "ready",
+      "human_notes": "5/5 on Greptile, low Veria issues, all tests passing, code fix looks small and reasonable for the issue."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26419",
+      "category": "merged_ui_fix",
+      "notes": "Merged: adds missing 'zai' provider to UI dropdown. UI-only diff — exercises pattern reviewer on TS/React surface.",
+      "human_label": "ready",
+      "human_notes": "5/5 on Greptile, no Veria issues, all tests passing, some proof of it working, code looks reasonable."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26011",
+      "category": "merged_integration",
+      "notes": "Merged: Cycraft XecGuard integration (net-new provider). Pair this with PR 26415 to see how the reviewer treats the same shape pre vs post merge.",
+      "human_label": "ready",
+      "human_notes": "5/5 on Greptile, no Veria issues, all tests passing, some proof of it working, code looks reasonable. Integration follows pattern in codebase + docs for other similar integrations."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26467",
+      "category": "merged_security",
+      "notes": "Merged: harden pass-through target URL construction. Security-shaped fix — exercise whether pattern reviewer flags any URL-handling drift.",
+      "human_label": "ready",
+      "human_notes": "5/5 on Greptile, no Veria issues, all tests passing, some proof of it working, code looks reasonable. Issue + fix is well explained."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/25662",
+      "category": "deps_bump",
+      "notes": "Dependabot: aiohttp bump. Expect deps-only verdict, ~zero pattern findings.",
+      "human_label": null,
+      "human_notes": "Not yet graded by a human."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26188",
+      "category": "deps_bump",
+      "notes": "Dependabot: python-dotenv bump. Second deps PR — confirm consistency across deps-bump PRs (both should look almost identical to the agent).",
+      "human_label": null,
+      "human_notes": "Not yet graded by a human."
+    }
+  ]
+}

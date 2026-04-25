@@ -21,3 +21,14 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.0.3",
 ]
+
+[tool.pytest.ini_options]
+# Default to "everything except eval" so a plain `pytest` invocation never
+# accidentally fires the live (slow + costs money) eval. Opt in explicitly
+# with `pytest -m eval` to run only eval, or `pytest -m "eval or not eval"`
+# to run both. The `--strict-markers` would be nice but we keep the float
+# loose so contributors can add ad-hoc markers without ceremony.
+addopts = "-m 'not eval'"
+markers = [
+    "eval: live end-to-end eval against the curated PR set (slow, costs LLM money, opt-in only). Run with `pytest -m eval`.",
+]
