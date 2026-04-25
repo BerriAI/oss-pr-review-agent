@@ -231,11 +231,12 @@ _RUBRIC: list[_RubricRow] = [
         lambda t, p: t.greptile_score is None,
         lambda t, p: "Greptile has not reviewed this PR yet",
     ),
-    (
-        1,
-        lambda t, p: not t.has_circleci_checks,
-        lambda t, p: "no CircleCI checks ran on this PR",
-    ),
+    # Note: missing CircleCI is intentionally NOT a penalty. OSS PRs from
+    # external contributors often can't trigger CircleCI (it's gated on repo
+    # secrets), so docking them would punish the contributor for a config
+    # constraint they have no control over. The skill makes the same call —
+    # see litellm-pr-reviewer/SKILL.md Step 4. has_circleci_checks still flows
+    # through to the drill-down for reviewer awareness.
 ]
 
 
@@ -279,9 +280,10 @@ def _compose_justification(
             + ". Score will update once checks complete."
         )
     if verdict == "READY":
+        ci_note = "CircleCI passed" if triage.has_circleci_checks else "no CircleCI runs (OSS-typical)"
         return (
             f"All checks green. Greptile {triage.greptile_score}/5, "
-            f"no blocking pattern findings, CircleCI passed."
+            f"no blocking pattern findings, {ci_note}."
         )
     sentences: list[str] = []
     if penalties:

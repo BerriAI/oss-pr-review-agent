@@ -92,13 +92,15 @@ def test_null_greptile_docks_1():
     assert "Greptile has not reviewed" in card.justification
 
 
-def test_missing_circleci_docks_1():
-    """The PR #26506 case from the design discussion: code is fine, only
-    penalty is that CircleCI didn't run."""
+def test_missing_circleci_does_not_dock_oss_pr():
+    """OSS PRs from external contributors often can't run CircleCI (gated on
+    repo secrets). Don't penalize them for it — the skill makes the same call.
+    PR #26506 from the design discussion is the canonical example."""
     card = fuse(_triage(has_circleci_checks=False), _pattern())
-    assert card.score == 4
-    assert card.verdict == "BLOCKED"
-    assert "CircleCI" in card.justification
+    assert card.score == 5
+    assert card.verdict == "READY"
+    # CI status still surfaces in the justification so reviewers see it.
+    assert "no CircleCI" in card.justification
 
 
 def test_suggestions_and_nits_do_not_dock():
@@ -127,7 +129,7 @@ def test_running_checks_overrides_blocked_too():
 
 
 def test_score_floors_at_zero():
-    """Worst case: every penalty fires, score should clip at 0 not go negative."""
+    """Worst case: every score-affecting penalty fires, score clips at 0."""
     card = fuse(
         _triage(
             pr_related_failures=["a"],
@@ -136,8 +138,8 @@ def test_score_floors_at_zero():
         ),
         _pattern(findings=[_finding("blocker"), _finding("suggestion")]),
     )
-    # 5 - 2 (pr_related) - 2 (blocker) - 1 (greptile<4) - 1 (no circleci) = -1, clipped to 0.
-    # Suggestion has weight 0 in current rubric.
+    # 5 - 2 (pr_related) - 2 (blocker) - 1 (greptile<4) = 0 exactly.
+    # Suggestion and missing-CircleCI both have weight 0 in current rubric.
     assert card.score == 0
     assert card.verdict == "BLOCKED"
 
@@ -166,7 +168,7 @@ def test_render_card_has_required_sections_in_order():
 
 
 def test_render_card_score_format():
-    card = fuse(_triage(has_circleci_checks=False), _pattern())
+    card = fuse(_triage(greptile_score=3), _pattern())
     text = render_card(card)
     assert "Merge Confidence: 4/5" in text
     assert "❌ BLOCKED" in text
