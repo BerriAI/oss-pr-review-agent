@@ -7,9 +7,11 @@ dependencies = [
     "aiohttp>=3.10.0",
     "fastapi>=0.136.1",
     "httpx>=0.28.1",
+    "itsdangerous>=2.2.0",
     "logfire[fastapi,httpx]>=4.0.0",
     "pydantic-ai-slim[openai]>=0.0.20",
     "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.26",
     "slack-bolt>=1.27.0",
     "uvicorn>=0.46.0",
 ]
