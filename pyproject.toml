@@ -4,11 +4,12 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
-    "claude-agent-sdk>=0.1.66",
+    "aiohttp>=3.10.0",
     "fastapi>=0.136.1",
     "httpx>=0.28.1",
+    "pydantic-ai-slim[openai]>=0.0.20",
     "python-dotenv>=1.2.2",
-    "slack-sdk>=3.41.0",
+    "slack-bolt>=1.27.0",
     "uvicorn>=0.46.0",
 ]
 
