@@ -293,20 +293,35 @@ def test_thread_history_fetch_failure_falls_back_to_prompt(env, monkeypatch):
 
 # --- review_pr (the agent pipeline) -----------------------------------------
 
-def test_review_pr_runs_both_agents_and_posts_one_combined_message(monkeypatch):
-    """review_pr should run both agents in parallel and post a single Slack
-    message with both 'CI Triage' and 'Pattern Conformance' sections.
+def test_review_pr_runs_both_agents_and_posts_card_plus_drilldown(monkeypatch):
+    """review_pr should run both typed agents in parallel and post:
+      1. The fused card (built by fuse() + render_card())
+      2. A threaded drill-down reply
     """
-    run_calls: list[tuple[str, str]] = []
+    run_calls: list[str] = []
 
-    async def fake_run_one(selected_agent, prompt, history=None):
-        name = "triage" if selected_agent is app_mod.agent else "pattern"
-        run_calls.append((name, prompt))
-        return (f"{name} verdict for {prompt}", [])
+    fake_triage = app_mod.TriageReport(
+        pr_number=77,
+        pr_title="test pr",
+        pr_author="alice",
+        pr_summary="Adds a feature.",
+        has_circleci_checks=True,
+        greptile_score=5,
+    )
+    fake_pattern = app_mod.PatternReport(findings=[], tech_debt=[])
+
+    async def fake_run_triage(prompt, history=None):
+        run_calls.append("triage")
+        return (fake_triage, [], None)
+
+    async def fake_run_pattern(prompt, history=None):
+        run_calls.append("pattern")
+        return (fake_pattern, [], None)
 
     fake_bolt = FakeBolt()
 
-    monkeypatch.setattr(app_mod, "_run_one", fake_run_one)
+    monkeypatch.setattr(app_mod, "_run_triage", fake_run_triage)
+    monkeypatch.setattr(app_mod, "_run_pattern", fake_run_pattern)
     monkeypatch.setattr(slack_mod, "bolt", fake_bolt)
 
     asyncio.run(
@@ -315,13 +330,43 @@ def test_review_pr_runs_both_agents_and_posts_one_combined_message(monkeypatch):
         )
     )
 
-    names = sorted(name for name, _ in run_calls)
-    assert names == ["pattern", "triage"]
+    assert sorted(run_calls) == ["pattern", "triage"]
+    # One card message + one drill-down reply, both threaded.
+    assert len(fake_bolt.client.posts) == 2
+    card_body = fake_bolt.client.posts[0]["text"]
+    drilldown_body = fake_bolt.client.posts[1]["text"]
+    assert "*Triage Summary*" in card_body
+    assert "*Merge Confidence: 5/5*" in card_body
+    assert "✅ READY" in card_body
+    assert "*Drill-down*" in drilldown_body
+
+
+def test_review_pr_posts_fallback_card_when_agent_fails(monkeypatch):
+    """If either agent crashes, user should still see a card-shaped message
+    rather than a raw exception trace."""
+
+    async def fake_run_triage(prompt, history=None):
+        return (None, [], "model timed out")
+
+    async def fake_run_pattern(prompt, history=None):
+        return (app_mod.PatternReport(), [], None)
+
+    fake_bolt = FakeBolt()
+    monkeypatch.setattr(app_mod, "_run_triage", fake_run_triage)
+    monkeypatch.setattr(app_mod, "_run_pattern", fake_run_pattern)
+    monkeypatch.setattr(slack_mod, "bolt", fake_bolt)
+
+    asyncio.run(
+        app_mod.review_pr(
+            "https://github.com/BerriAI/litellm/pull/77", "C1", "1700.000200"
+        )
+    )
+
     assert len(fake_bolt.client.posts) == 1
     body = fake_bolt.client.posts[0]["text"]
-    assert "*CI Triage*" in body
-    assert "*Pattern Conformance*" in body
-    assert "https://github.com/BerriAI/litellm/pull/77" in body
+    assert "*Triage Summary*" in body
+    assert "⚠️ ERROR" in body
+    assert "model timed out" in body
 
 
 def test_healthz():

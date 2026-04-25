@@ -6,14 +6,15 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from typing import Callable, Literal
 
 import logfire
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from pydantic_ai import Agent, ModelRetry
-from pydantic_ai.messages import ModelMessage, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
 
@@ -59,14 +60,348 @@ def _redirect(script_name: str, tool_name: str) -> str:
     )
 
 
+# Override the "emit prose" steps in each upstream SKILL. The skills are a git
+# submodule pointing at BerriAI/pr-review-agent-skills, so we can't edit them
+# directly without forking. These prefixes are appended *after* the SKILL text
+# so the model reads them as the most recent (and overriding) instruction
+# before producing its final structured output.
+TRIAGE_OUTPUT_OVERRIDE = """
+OUTPUT OVERRIDE (supersedes Step 6 above):
+
+Ignore the "write the verdict" instructions in Step 6. Do not emit prose with
+overview / summary / details / file_callouts. Instead, return the
+TriageReport schema with these fields:
+
+- pr_number, pr_title, pr_author: from the gathered data
+- pr_summary: ONE paragraph (max 600 chars), plain prose, no markdown bold or
+  italics. Describe what the PR changes (infer from pr_title + diff_files).
+- pr_related_failures: list of check names from failing_check_contexts where
+  related_to_pr_diff is True (per Step 2 classification rules).
+- unrelated_failures: list of check names where related_to_pr_diff is False.
+- running_checks: in_progress_checks verbatim.
+- greptile_score: the int from the gathered data, or null.
+- has_circleci_checks: bool from the gathered data.
+
+Do not include any prose justification, summary, or details — Python composes
+those from these structured fields downstream. Your job ends at field-filling.
+"""
+
+PATTERN_OUTPUT_OVERRIDE = """
+OUTPUT OVERRIDE (supersedes Step 4 above):
+
+Ignore the "emit overview / summary" instructions in Step 4. Do not write
+prose. Return the PatternReport schema with these fields:
+
+- findings: list of {file, severity, source, citation, rationale} per Step 3
+  classification. Use severity blocker/suggestion/nit exactly as defined.
+  rationale max 200 chars, plain prose, no markdown bold or italics.
+- tech_debt: list of {doc_path, code_path, note} per the existing rule. note
+  max 200 chars.
+
+If there are no findings, return findings: []. If no tech_debt, return [].
+Do not include overview or summary — Python composes the user-facing card
+from your findings list downstream.
+"""
+
+
 SYSTEM_PROMPT = (
     _redirect("gather_pr_triage_data.py", "gather_pr_data")
     + (SKILL_DIR / "SKILL.md").read_text()
+    + TRIAGE_OUTPUT_OVERRIDE
 )
 PATTERN_SYSTEM_PROMPT = (
     _redirect("gather_pattern_data.py", "gather_pattern_data")
     + (PATTERN_SKILL_DIR / "SKILL.md").read_text()
+    + PATTERN_OUTPUT_OVERRIDE
 )
+
+# --- Typed agent outputs + card rendering -------------------------------------
+# Both agents return Pydantic models (not free-form prose). Python composes the
+# final Slack card from those typed fields via fuse() + render_card(), so the
+# layout is guaranteed identical across runs and the only thing the model
+# controls is the *content* of each slot.
+
+# Length caps below are deliberate. They're enforced by Pydantic AI: if the
+# model exceeds them, the run retries with the validation error as feedback.
+# Pick numbers that fit comfortably in a Slack message without truncation.
+
+
+def _no_markdown_bold(v: str) -> str:
+    """Hard-fail any agent prose that contains markdown bold; the deterministic
+    Slack rendering owns formatting end-to-end. Pydantic AI catches the
+    ValueError and retries the model with this message as feedback."""
+    if "**" in v or "__" in v:
+        raise ValueError("text fields must not contain markdown bold (** or __)")
+    return v
+
+
+class TriageReport(BaseModel):
+    """Structured CI/policy signals for one PR. Filled by the triage agent."""
+
+    pr_number: int
+    pr_title: str
+    pr_author: str
+    # 1 paragraph: what the PR changes. Drives the *Triage Summary* line.
+    pr_summary: str = Field(..., max_length=600)
+    # Check names only. Classification logic lives in the SKILL.
+    pr_related_failures: list[str] = Field(default_factory=list)
+    unrelated_failures: list[str] = Field(default_factory=list)
+    running_checks: list[str] = Field(default_factory=list)
+    greptile_score: int | None = None
+    has_circleci_checks: bool
+
+    _strip_bold = field_validator("pr_summary")(_no_markdown_bold)
+
+
+class PatternFinding(BaseModel):
+    file: str
+    severity: Literal["blocker", "suggestion", "nit"]
+    source: Literal["docs", "code"]
+    citation: str
+    rationale: str = Field(..., max_length=200)
+
+
+class TechDebtItem(BaseModel):
+    doc_path: str
+    code_path: str
+    note: str = Field(..., max_length=200)
+
+
+class PatternReport(BaseModel):
+    """Pattern-conformance findings + ambient tech debt. Filled by pattern agent."""
+
+    findings: list[PatternFinding] = Field(default_factory=list)
+    tech_debt: list[TechDebtItem] = Field(default_factory=list)
+
+
+class TriageCard(BaseModel):
+    """Final card. Built by fuse() from TriageReport + PatternReport, never by
+    the model directly."""
+
+    summary: str
+    score: int = Field(..., ge=0, le=5)
+    verdict: Literal["READY", "BLOCKED", "WAITING"]
+    emoji: str
+    verdict_one_liner: str
+    justification: str
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _join(items: list[str], cap: int = 3) -> str:
+    head = items[:cap]
+    tail = "" if len(items) <= cap else f" (+{len(items) - cap} more)"
+    return ", ".join(head) + tail
+
+
+def _count(p: PatternReport, sev: str) -> int:
+    return sum(1 for f in p.findings if f.severity == sev)
+
+
+# Rubric: one row per penalty. Each row is (weight, predicate, label_fn).
+# label_fn returns the human-readable reason that lands in the justification.
+# Edit this table to retune scoring; everything else flows from it.
+_RubricRow = tuple[
+    int,
+    Callable[[TriageReport, PatternReport], bool],
+    Callable[[TriageReport, PatternReport], str],
+]
+_RUBRIC: list[_RubricRow] = [
+    (
+        2,
+        lambda t, p: bool(t.pr_related_failures),
+        lambda t, p: f"{_plural(len(t.pr_related_failures), 'PR-related CI failure')} "
+        f"({_join(t.pr_related_failures)})",
+    ),
+    (
+        2,
+        lambda t, p: any(f.severity == "blocker" for f in p.findings),
+        lambda t, p: f"{_plural(_count(p, 'blocker'), 'doc violation')} "
+        f"({_join([f.file for f in p.findings if f.severity == 'blocker'])})",
+    ),
+    (
+        1,
+        lambda t, p: t.greptile_score is not None and t.greptile_score < 4,
+        lambda t, p: f"Greptile {t.greptile_score}/5",
+    ),
+    (
+        1,
+        lambda t, p: t.greptile_score is None,
+        lambda t, p: "Greptile has not reviewed this PR yet",
+    ),
+    (
+        1,
+        lambda t, p: not t.has_circleci_checks,
+        lambda t, p: "no CircleCI checks ran on this PR",
+    ),
+]
+
+
+def _compose_one_liner(
+    verdict: str,
+    penalties: list[str],
+    triage: TriageReport,
+    pattern: PatternReport,
+) -> str:
+    if verdict == "WAITING":
+        n = len(triage.running_checks)
+        return f"{_plural(n, 'check')} still running: {_join(triage.running_checks)}."
+    if verdict == "READY":
+        return "Ready to ship."
+    # BLOCKED: name the most-blocking thing first, in priority order.
+    if triage.pr_related_failures:
+        return f"{_plural(len(triage.pr_related_failures), 'PR-related CI failure')} need fixes first."
+    blocker_n = _count(pattern, "blocker")
+    if blocker_n:
+        return f"{_plural(blocker_n, 'pattern blocker')} need fixes first."
+    # Only soft penalties left → name the top one verbatim.
+    return penalties[0][:1].upper() + penalties[0][1:] + "."
+
+
+def _compose_justification(
+    verdict: str,
+    score: int,
+    penalties: list[str],
+    triage: TriageReport,
+    pattern: PatternReport,
+) -> str:
+    if verdict == "WAITING":
+        bits = [
+            f"Greptile {'pending' if triage.greptile_score is None else f'{triage.greptile_score}/5'}",
+            f"{_plural(len(pattern.findings), 'pattern finding')}",
+            f"CircleCI {'present' if triage.has_circleci_checks else 'absent'}",
+        ]
+        return (
+            "Verdict provisional. Current signals: "
+            + ", ".join(bits)
+            + ". Score will update once checks complete."
+        )
+    if verdict == "READY":
+        return (
+            f"All checks green. Greptile {triage.greptile_score}/5, "
+            f"no blocking pattern findings, CircleCI passed."
+        )
+    sentences: list[str] = []
+    if penalties:
+        sentences.append("Score docked for: " + "; ".join(penalties) + ".")
+    if triage.unrelated_failures:
+        sentences.append(
+            f"{_plural(len(triage.unrelated_failures), 'unrelated CI failure')} "
+            f"({_join(triage.unrelated_failures)}) — not related to this diff."
+        )
+    nits = _count(pattern, "nit")
+    sugg = _count(pattern, "suggestion")
+    extras = []
+    if sugg:
+        extras.append(_plural(sugg, "suggestion"))
+    if nits:
+        extras.append(_plural(nits, "nit"))
+    if extras:
+        sentences.append("Also " + " and ".join(extras) + " — see thread.")
+    return " ".join(sentences) or "No specific signal — see thread for detail."
+
+
+def fuse(triage: TriageReport, pattern: PatternReport) -> TriageCard:
+    """Combine the two agent outputs into the single card the user sees.
+
+    Pure function. No I/O. Deterministic given (triage, pattern). Tested in
+    tests/test_fuse.py.
+    """
+    score = 5
+    penalties: list[str] = []
+    for weight, predicate, label in _RUBRIC:
+        if predicate(triage, pattern):
+            score -= weight
+            penalties.append(label(triage, pattern))
+    score = max(score, 0)
+
+    # WAITING wins over score-derived states because the score is provisional
+    # while checks are still running.
+    if triage.running_checks:
+        verdict, emoji = "WAITING", "⏳"
+    elif score == 5:
+        verdict, emoji = "READY", "✅"
+    else:
+        verdict, emoji = "BLOCKED", "❌"
+
+    return TriageCard(
+        summary=triage.pr_summary,
+        score=score,
+        verdict=verdict,
+        emoji=emoji,
+        verdict_one_liner=_compose_one_liner(verdict, penalties, triage, pattern),
+        justification=_compose_justification(
+            verdict, score, penalties, triage, pattern
+        ),
+    )
+
+
+def render_card(card: TriageCard) -> str:
+    """Slack mrkdwn for the top-level message. Exact shape locked here."""
+    return (
+        f"*Triage Summary*\n"
+        f"{card.summary}\n\n"
+        f"*Merge Confidence: {card.score}/5*  {card.emoji} {card.verdict}\n"
+        f"{card.verdict_one_liner}\n\n"
+        f"{card.justification}"
+    )
+
+
+def render_drilldown(triage: TriageReport, pattern: PatternReport) -> str:
+    """Slack mrkdwn for the threaded follow-up: full failure list + findings.
+
+    Posted as a reply so it doesn't compete with the card visually but is one
+    click away for anyone who wants the detail.
+    """
+    lines: list[str] = ["*Drill-down*"]
+
+    if triage.pr_related_failures:
+        lines.append("\n_PR-related failures_")
+        for c in triage.pr_related_failures:
+            lines.append(f"  • {c}")
+    if triage.unrelated_failures:
+        lines.append("\n_Unrelated failures_")
+        for c in triage.unrelated_failures:
+            lines.append(f"  • {c}")
+    if triage.running_checks:
+        lines.append("\n_Still running_")
+        for c in triage.running_checks:
+            lines.append(f"  • {c}")
+
+    if pattern.findings:
+        lines.append("\n_Pattern findings_")
+        for f in pattern.findings:
+            lines.append(
+                f"  • [{f.severity}] `{f.file}` — {f.rationale} "
+                f"(source: {f.source}, {f.citation})"
+            )
+    if pattern.tech_debt:
+        lines.append("\n_Tech debt (FYI, not blocking)_")
+        for td in pattern.tech_debt:
+            lines.append(
+                f"  • `{td.code_path}` vs `{td.doc_path}` — {td.note}"
+            )
+
+    if len(lines) == 1:
+        lines.append("Nothing to drill into. Card has the full story.")
+    return "\n".join(lines)
+
+
+def render_fallback_card(pr_url: str, error: str) -> str:
+    """Same shape as render_card() so the reader's eye lands in the same slots
+    even when the agent crashed. Triggered from the exception path in the
+    runner functions below.
+    """
+    return (
+        f"*Triage Summary*\n"
+        f"Could not analyze {pr_url} automatically.\n\n"
+        f"*Merge Confidence: ?/5*  ⚠️ ERROR\n"
+        f"Manual review required.\n\n"
+        f"Reason: {error[:300]}"
+    )
+
 
 model = OpenAIChatModel(
     os.environ.get("LITELLM_MODEL", "claude-sonnet-4-6"),
@@ -75,8 +410,10 @@ model = OpenAIChatModel(
         api_key=os.environ["LITELLM_API_KEY"],
     ),
 )
-agent = Agent(model, system_prompt=SYSTEM_PROMPT)
-pattern_agent = Agent(model, system_prompt=PATTERN_SYSTEM_PROMPT)
+agent = Agent(model, system_prompt=SYSTEM_PROMPT, output_type=TriageReport)
+pattern_agent = Agent(
+    model, system_prompt=PATTERN_SYSTEM_PROMPT, output_type=PatternReport
+)
 
 
 def _run_gather_script(script: Path, pr_ref: str) -> dict:
@@ -129,22 +466,36 @@ def gather_pattern_data(pr_ref: str) -> dict:
     return _run_gather_script(PATTERN_GATHER_SCRIPT, pr_ref)
 
 
-async def _run_one(
-    selected_agent: Agent,
+async def _run_triage(
     prompt: str,
     history: list | None = None,
-) -> tuple[str, list]:
-    """Run a single agent and return (output_text, new_messages_for_history).
-    Catches exceptions so a failure in one agent doesn't kill the other in
-    asyncio.gather().
+) -> tuple[TriageReport | None, list, str | None]:
+    """Run the triage agent, returning (report, new_history, error_message).
+
+    On success: report is a TriageReport, error_message is None.
+    On failure (model crashed, validation never converged, etc.): report is
+    None and error_message holds the exception text. The caller renders a
+    fallback card so the user always sees a valid card shape.
     """
     try:
-        result = await selected_agent.run(prompt, message_history=history or [])
+        result = await agent.run(prompt, message_history=history or [])
     except Exception as e:
-        log.exception("agent_failed prompt_head=%s", prompt[:80])
-        return (f":warning: agent failed: {e}", history or [])
-    output = (result.output or "").strip() or "_(empty)_"
-    return (output, list(result.all_messages()))
+        log.exception("triage_agent_failed prompt_head=%s", prompt[:80])
+        return (None, history or [], str(e))
+    return (result.output, list(result.all_messages()), None)
+
+
+async def _run_pattern(
+    prompt: str,
+    history: list | None = None,
+) -> tuple[PatternReport | None, list, str | None]:
+    """Mirror of _run_triage for the pattern-conformance agent."""
+    try:
+        result = await pattern_agent.run(prompt, message_history=history or [])
+    except Exception as e:
+        log.exception("pattern_agent_failed prompt_head=%s", prompt[:80])
+        return (None, history or [], str(e))
+    return (result.output, list(result.all_messages()), None)
 
 
 app = FastAPI()
@@ -171,11 +522,12 @@ def _extract_tool_trace(messages) -> list[dict]:
 
 
 async def review_pr(pr_url: str, channel: str, thread_ts: str) -> None:
-    """Run both the CI triage agent and the pattern conformance agent in
-    parallel and post a single two-section reply in the thread.
+    """Run both agents in parallel, fuse their typed outputs into one card,
+    and post it (plus a threaded drill-down) to Slack.
+
+    Card shape is deterministic — the model fills schema slots, Python composes
+    the prose. See render_card() / fuse() for the contract.
     """
-    # Background task spawned via asyncio.create_task; opening a root span here
-    # so the two parallel agent runs and the Slack post share one trace.
     with logfire.span(
         "review_pr",
         pr_url=pr_url,
@@ -188,24 +540,39 @@ async def review_pr(pr_url: str, channel: str, thread_ts: str) -> None:
 
         triage_prompt = f"Triage this PR: {pr_url}"
         pattern_prompt = f"Review this PR for pattern conformance: {pr_url}"
-        (triage_text, _), (pattern_text, _) = await asyncio.gather(
-            _run_one(agent, triage_prompt),
-            _run_one(pattern_agent, pattern_prompt),
+        (triage, _, triage_err), (pattern, _, pattern_err) = await asyncio.gather(
+            _run_triage(triage_prompt),
+            _run_pattern(pattern_prompt),
         )
 
-        body = (
-            f"*Review:* {pr_url}\n\n"
-            f"*CI Triage*\n{triage_text}\n\n"
-            f"*Pattern Conformance*\n{pattern_text}"
+        # Either agent failing means we can't build a real card. Show the
+        # fallback (same shape, marked as ⚠️ ERROR) so the user still sees the
+        # familiar layout instead of a raw exception trace.
+        if triage is None or pattern is None:
+            err = triage_err or pattern_err or "unknown agent failure"
+            await slack_handler.bolt.client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=render_fallback_card(pr_url, err),
+            )
+            log.warning("posted_fallback_card url=%s err=%s", pr_url, err)
+            return
+
+        card = fuse(triage, pattern)
+        card_text = render_card(card)
+        drilldown = render_drilldown(triage, pattern)
+
+        await slack_handler.bolt.client.chat_postMessage(
+            channel=channel, thread_ts=thread_ts, text=card_text
         )
         await slack_handler.bolt.client.chat_postMessage(
-            channel=channel, thread_ts=thread_ts, text=body
+            channel=channel, thread_ts=thread_ts, text=drilldown
         )
         log.info(
-            "posted_review url=%s triage_chars=%s pattern_chars=%s",
+            "posted_review url=%s score=%s verdict=%s",
             pr_url,
-            len(triage_text),
-            len(pattern_text),
+            card.score,
+            card.verdict,
         )
 
 
@@ -314,16 +681,23 @@ async def chat_api(req: ChatRequest) -> ChatResponse:
         THREADS[thread["id"]] = thread
 
     histories = thread["histories"]
-    (triage_text, triage_msgs), (pattern_text, pattern_msgs) = await asyncio.gather(
-        _run_one(agent, req.message, histories["triage"]),
-        _run_one(pattern_agent, req.message, histories["pattern"]),
+    (triage, triage_msgs, triage_err), (pattern, pattern_msgs, pattern_err) = await asyncio.gather(
+        _run_triage(req.message, histories["triage"]),
+        _run_pattern(req.message, histories["pattern"]),
     )
     thread["histories"] = {"triage": triage_msgs, "pattern": pattern_msgs}
 
-    combined = (
-        f"**CI Triage**\n{triage_text}\n\n"
-        f"**Pattern Conformance**\n{pattern_text}"
-    )
+    # Mirror Slack: render the same card here so the dev UI is a real preview
+    # of what users will see, not a debugging dump. Drill-down appended below
+    # the card with a separator instead of being a separate message.
+    if triage is None or pattern is None:
+        combined = render_fallback_card(
+            req.message, triage_err or pattern_err or "unknown agent failure"
+        )
+    else:
+        card = fuse(triage, pattern)
+        combined = render_card(card) + "\n\n---\n\n" + render_drilldown(triage, pattern)
+
     trace = (
         [{"kind": "label", "tool": "triage", "preview": ""}]
         + _extract_tool_trace(triage_msgs[len(histories["triage"]):])
