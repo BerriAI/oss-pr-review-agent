@@ -39,28 +39,33 @@ missing = [k for k in REQUIRED if not os.environ.get(k)]
 if missing:
     raise RuntimeError(f"missing required env vars: {', '.join(missing)}")
 
-SKILL_DIR = (
-    Path(__file__).parent / "skills/pr-review-agent-skills/litellm-pr-reviewer"
-)
+SKILLS_ROOT = Path(__file__).parent / "skills/pr-review-agent-skills"
+SKILL_DIR = SKILLS_ROOT / "litellm-pr-reviewer"
 GATHER_SCRIPT = SKILL_DIR / "scripts/gather_pr_triage_data.py"
-PATTERN_SKILL_DIR = (
-    Path(__file__).parent
-    / "skills-local/litellm-pattern-conformance-reviewer"
-)
+PATTERN_SKILL_DIR = SKILLS_ROOT / "litellm-pattern-conformance-reviewer"
 PATTERN_GATHER_SCRIPT = PATTERN_SKILL_DIR / "scripts/gather_pattern_data.py"
 
-# SKILL.md tells the model to shell out to the gather script. We expose that as a
-# typed tool instead so the agent never gets a generic Bash. This prefix overrides
-# the "Step 1" bash instruction without touching the skill file.
-TOOL_REDIRECT = (
-    "TOOL USE: Wherever the instructions below say to run "
-    "`python ${CLAUDE_SKILL_DIR}/scripts/gather_pr_triage_data.py <ref>`, "
-    "instead call the `gather_pr_data` tool with the PR reference. "
-    "It returns the same JSON shape the script would have printed.\n\n"
-)
-SYSTEM_PROMPT = TOOL_REDIRECT + (SKILL_DIR / "SKILL.md").read_text()
+# Each SKILL.md tells the model to shell out to its gather script. We expose
+# those scripts as typed Pydantic AI tools instead so the agent never gets a
+# generic Bash. This prefix overrides the "Step 1" bash instruction in each
+# SKILL.md without having to fork the upstream skill files.
+def _redirect(script_name: str, tool_name: str) -> str:
+    return (
+        f"TOOL USE: Wherever the instructions below say to run "
+        f"`python ${{CLAUDE_SKILL_DIR}}/scripts/{script_name} <ref>`, "
+        f"instead call the `{tool_name}` tool with the PR reference. "
+        f"It returns the same JSON shape the script would have printed.\n\n"
+    )
 
-PATTERN_SYSTEM_PROMPT = (PATTERN_SKILL_DIR / "SKILL.md").read_text()
+
+SYSTEM_PROMPT = (
+    _redirect("gather_pr_triage_data.py", "gather_pr_data")
+    + (SKILL_DIR / "SKILL.md").read_text()
+)
+PATTERN_SYSTEM_PROMPT = (
+    _redirect("gather_pattern_data.py", "gather_pattern_data")
+    + (PATTERN_SKILL_DIR / "SKILL.md").read_text()
+)
 
 model = OpenAIChatModel(
     os.environ.get("LITELLM_MODEL", "claude-sonnet-4-6"),
