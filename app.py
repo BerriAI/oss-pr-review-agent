@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -217,19 +218,89 @@ slack_handler.mount(app, on_pr_review=review_pr)
 
 class ChatRequest(BaseModel):
     message: str
-    session_id: str | None = None
+    thread_id: str | None = None
 
 
 class ChatResponse(BaseModel):
     output: str
     tool_trace: list[dict]
-    session_id: str
+    thread_id: str
 
 
-# In-memory chat sessions for the dev UI: session_id -> {agent_name: history}.
-# Each agent gets its own message history so tool returns stay paired with the
-# correct agent's tool definitions.
-SESSIONS: dict[str, dict[str, list[ModelMessage]]] = {}
+class ThreadSummary(BaseModel):
+    id: str
+    title: str
+    updated_at: float
+
+
+class ThreadDetail(BaseModel):
+    id: str
+    title: str
+    updated_at: float
+    # Flat transcript the UI replays when you switch threads. Each turn is
+    # {role: "user"|"assistant", content: str, tool_trace?: list[dict]}.
+    turns: list[dict]
+
+
+# In-memory chat threads for the dev UI. Each thread keeps:
+#   - per-agent ModelMessage history (so tool returns stay paired with the
+#     right agent's tool definitions on subsequent turns)
+#   - a flat UI transcript so the frontend can rehydrate when the user
+#     switches between threads
+#   - a title (first user message, truncated) and updated_at for the sidebar
+THREADS: dict[str, dict] = {}
+
+
+def _new_thread() -> dict:
+    return {
+        "id": uuid.uuid4().hex,
+        "title": "New chat",
+        "updated_at": time.time(),
+        "histories": {"triage": [], "pattern": []},
+        "turns": [],
+    }
+
+
+def _summarize(thread: dict) -> ThreadSummary:
+    return ThreadSummary(
+        id=thread["id"], title=thread["title"], updated_at=thread["updated_at"]
+    )
+
+
+@app.get("/chat/api/threads", response_model=list[ThreadSummary])
+async def list_threads() -> list[ThreadSummary]:
+    return [
+        _summarize(t)
+        for t in sorted(THREADS.values(), key=lambda t: t["updated_at"], reverse=True)
+    ]
+
+
+@app.post("/chat/api/threads", response_model=ThreadSummary)
+async def create_thread() -> ThreadSummary:
+    thread = _new_thread()
+    THREADS[thread["id"]] = thread
+    return _summarize(thread)
+
+
+@app.get("/chat/api/threads/{thread_id}", response_model=ThreadDetail)
+async def get_thread(thread_id: str) -> ThreadDetail:
+    thread = THREADS.get(thread_id)
+    if not thread:
+        raise HTTPException(404, "thread not found")
+    return ThreadDetail(
+        id=thread["id"],
+        title=thread["title"],
+        updated_at=thread["updated_at"],
+        turns=thread["turns"],
+    )
+
+
+@app.delete("/chat/api/threads/{thread_id}")
+async def delete_thread(thread_id: str) -> dict:
+    if thread_id not in THREADS:
+        raise HTTPException(404, "thread not found")
+    del THREADS[thread_id]
+    return {"ok": True}
 
 
 @app.post("/chat/api", response_model=ChatResponse)
@@ -237,14 +308,17 @@ async def chat_api(req: ChatRequest) -> ChatResponse:
     if not req.message.strip():
         raise HTTPException(400, "message is empty")
 
-    session_id = req.session_id or uuid.uuid4().hex
-    histories = SESSIONS.get(session_id, {"triage": [], "pattern": []})
+    thread = THREADS.get(req.thread_id) if req.thread_id else None
+    if thread is None:
+        thread = _new_thread()
+        THREADS[thread["id"]] = thread
 
+    histories = thread["histories"]
     (triage_text, triage_msgs), (pattern_text, pattern_msgs) = await asyncio.gather(
         _run_one(agent, req.message, histories["triage"]),
         _run_one(pattern_agent, req.message, histories["pattern"]),
     )
-    SESSIONS[session_id] = {"triage": triage_msgs, "pattern": pattern_msgs}
+    thread["histories"] = {"triage": triage_msgs, "pattern": pattern_msgs}
 
     combined = (
         f"**CI Triage**\n{triage_text}\n\n"
@@ -256,16 +330,41 @@ async def chat_api(req: ChatRequest) -> ChatResponse:
         + [{"kind": "label", "tool": "pattern", "preview": ""}]
         + _extract_tool_trace(pattern_msgs[len(histories["pattern"]):])
     )
-    return ChatResponse(output=combined, tool_trace=trace, session_id=session_id)
+
+    thread["turns"].append({"role": "user", "content": req.message})
+    thread["turns"].append(
+        {"role": "assistant", "content": combined, "tool_trace": trace}
+    )
+    thread["updated_at"] = time.time()
+    # First user turn doubles as the thread title in the sidebar.
+    if thread["title"] == "New chat":
+        thread["title"] = (req.message[:60] + "…") if len(req.message) > 60 else req.message
+
+    return ChatResponse(output=combined, tool_trace=trace, thread_id=thread["id"])
 
 
 CHAT_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>litellm-bot dev chat</title>
 <style>
-  body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:780px;margin:24px auto;padding:0 16px;color:#222}
+  *{box-sizing:border-box}
+  body{font:14px/1.5 -apple-system,system-ui,sans-serif;margin:0;color:#222;height:100vh;display:flex}
+  #sidebar{width:240px;border-right:1px solid #ddd;background:#f5f5f7;display:flex;flex-direction:column;height:100vh}
+  #sidebar-head{padding:12px;border-bottom:1px solid #e0e0e3;display:flex;gap:8px;align-items:center}
+  #sidebar-head h2{font-size:13px;margin:0;flex:1;color:#333}
+  #new-btn{padding:6px 10px;border:0;border-radius:4px;background:#222;color:#fff;cursor:pointer;font:inherit;font-size:12px}
+  #threads{flex:1;overflow-y:auto;padding:6px}
+  .thread{padding:8px 10px;border-radius:5px;cursor:pointer;display:flex;align-items:center;gap:6px;margin-bottom:2px;color:#444}
+  .thread:hover{background:#e8e8ec}
+  .thread.active{background:#222;color:#fff}
+  .thread.active .del{color:#bbb}
+  .thread .title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+  .thread .del{border:0;background:transparent;color:#999;cursor:pointer;font-size:14px;padding:0 4px;visibility:hidden}
+  .thread:hover .del{visibility:visible}
+  .thread.active .del:hover{color:#fff}
+  #main{flex:1;display:flex;flex-direction:column;height:100vh;max-width:900px;margin:0 auto;padding:24px;overflow:hidden}
   h1{font-size:18px;margin:0 0 4px}
   .sub{color:#666;font-size:12px;margin-bottom:16px}
-  #log{border:1px solid #ddd;border-radius:6px;padding:12px;height:60vh;overflow-y:auto;background:#fafafa}
+  #log{flex:1;border:1px solid #ddd;border-radius:6px;padding:12px;overflow-y:auto;background:#fafafa}
   .msg{margin:0 0 14px;white-space:pre-wrap;word-wrap:break-word}
   .user{color:#0a4}
   .bot{color:#222}
@@ -276,22 +375,35 @@ CHAT_HTML = """<!doctype html>
   button{padding:10px 16px;border:0;border-radius:6px;background:#222;color:#fff;cursor:pointer;font:inherit}
   button:disabled{opacity:.5;cursor:wait}
   .hint{color:#888;font-size:12px;margin-top:8px}
+  .empty{color:#999;font-size:12px;text-align:center;padding:16px}
 </style></head>
 <body>
-<h1>litellm-bot dev chat</h1>
-<div class="sub">Sends to <code>POST /chat/api</code> → same agent the Slack handler uses.</div>
-<div id="log"></div>
-<form id="f">
-  <input id="m" type="text" placeholder="Triage this PR: https://github.com/BerriAI/litellm/pull/123" autofocus>
-  <button id="b" type="submit">Send</button>
-</form>
-<div class="hint">Tool calls show inline. First request can take 30–60s while the gather script hits GitHub.</div>
+<aside id="sidebar">
+  <div id="sidebar-head">
+    <h2>Chats</h2>
+    <button id="new-btn" type="button">+ New</button>
+  </div>
+  <div id="threads"></div>
+</aside>
+<main id="main">
+  <h1>litellm-bot dev chat</h1>
+  <div class="sub">Sends to <code>POST /chat/api</code> → same agent the Slack handler uses.</div>
+  <div id="log"></div>
+  <form id="f">
+    <input id="m" type="text" placeholder="Triage this PR: https://github.com/BerriAI/litellm/pull/123" autofocus>
+    <button id="b" type="submit">Send</button>
+  </form>
+  <div class="hint">Tool calls show inline. First request can take 30–60s while the gather script hits GitHub.</div>
+</main>
 <script>
 const log = document.getElementById('log');
 const form = document.getElementById('f');
 const input = document.getElementById('m');
 const btn = document.getElementById('b');
-let sessionId = null;
+const threadsEl = document.getElementById('threads');
+const newBtn = document.getElementById('new-btn');
+
+let threadId = localStorage.getItem('threadId');
 
 function add(cls, text){
   const div = document.createElement('div');
@@ -300,6 +412,94 @@ function add(cls, text){
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
 }
+
+function addTrace(trace){
+  for (const t of trace) {
+    if (t.kind === 'call') {
+      add('tool', '→ ' + t.tool + '(' + JSON.stringify(t.args) + ')');
+    } else if (t.kind === 'return') {
+      add('tool', '← ' + t.tool + ' returned: ' + t.preview);
+    } else if (t.kind === 'label') {
+      add('tool', '— ' + t.tool + ' —');
+    }
+  }
+}
+
+function setActiveThread(id){
+  threadId = id;
+  if (id) localStorage.setItem('threadId', id);
+  else localStorage.removeItem('threadId');
+  for (const el of threadsEl.querySelectorAll('.thread')) {
+    el.classList.toggle('active', el.dataset.id === id);
+  }
+}
+
+async function refreshThreads(){
+  const r = await fetch('/chat/api/threads');
+  const threads = await r.json();
+  threadsEl.innerHTML = '';
+  if (!threads.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'No chats yet. Send a message to start.';
+    threadsEl.appendChild(e);
+    return;
+  }
+  for (const t of threads) {
+    const row = document.createElement('div');
+    row.className = 'thread' + (t.id === threadId ? ' active' : '');
+    row.dataset.id = t.id;
+    const title = document.createElement('span');
+    title.className = 'title';
+    title.textContent = t.title;
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '×';
+    del.title = 'Delete chat';
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete this chat?')) return;
+      await fetch('/chat/api/threads/' + t.id, {method: 'DELETE'});
+      if (t.id === threadId) {
+        log.innerHTML = '';
+        setActiveThread(null);
+      }
+      await refreshThreads();
+    });
+    row.appendChild(title);
+    row.appendChild(del);
+    row.addEventListener('click', () => loadThread(t.id));
+    threadsEl.appendChild(row);
+  }
+}
+
+async function loadThread(id){
+  setActiveThread(id);
+  log.innerHTML = '';
+  const r = await fetch('/chat/api/threads/' + id);
+  if (!r.ok) {
+    setActiveThread(null);
+    await refreshThreads();
+    return;
+  }
+  const data = await r.json();
+  for (const turn of data.turns) {
+    if (turn.role === 'user') {
+      add('user', '> ' + turn.content);
+    } else {
+      if (turn.tool_trace) addTrace(turn.tool_trace);
+      add('bot', turn.content);
+    }
+  }
+  refreshThreads();
+}
+
+newBtn.addEventListener('click', () => {
+  log.innerHTML = '';
+  setActiveThread(null);
+  refreshThreads();
+  input.focus();
+});
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -314,7 +514,7 @@ form.addEventListener('submit', async (e) => {
     const r = await fetch('/chat/api', {
       method: 'POST',
       headers: {'content-type': 'application/json'},
-      body: JSON.stringify({message: msg, session_id: sessionId}),
+      body: JSON.stringify({message: msg, thread_id: threadId}),
     });
     placeholder.remove();
     if (!r.ok) {
@@ -323,15 +523,10 @@ form.addEventListener('submit', async (e) => {
       return;
     }
     const data = await r.json();
-    sessionId = data.session_id;
-    for (const t of data.tool_trace) {
-      if (t.kind === 'call') {
-        add('tool', '→ ' + t.tool + '(' + JSON.stringify(t.args) + ')');
-      } else {
-        add('tool', '← ' + t.tool + ' returned: ' + t.preview);
-      }
-    }
+    setActiveThread(data.thread_id);
+    addTrace(data.tool_trace);
     add('bot', data.output);
+    refreshThreads();
   } catch (err) {
     placeholder.remove();
     add('err', String(err));
@@ -340,6 +535,15 @@ form.addEventListener('submit', async (e) => {
     input.focus();
   }
 });
+
+(async () => {
+  await refreshThreads();
+  if (threadId) {
+    const r = await fetch('/chat/api/threads/' + threadId);
+    if (r.ok) loadThread(threadId);
+    else setActiveThread(null);
+  }
+})();
 </script>
 </body></html>"""
 
