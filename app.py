@@ -2,13 +2,13 @@ import asyncio
 import json
 import logging
 import os
-import re
 import subprocess
 import uuid
 from pathlib import Path
 
+import logfire
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from pydantic_ai import Agent, ModelRetry
@@ -16,9 +16,23 @@ from pydantic_ai.messages import ModelMessage, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
 
+import slack_handler
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("litellm-bot")
+
+# Logfire: no-op locally without LOGFIRE_TOKEN, ships traces in prod when set.
+# instrument_pydantic_ai() must run before any Agent() is constructed below.
+logfire.configure(
+    send_to_logfire="if-token-present",
+    service_name="litellm-bot",
+    scrubbing=False,
+)
+logfire.instrument_pydantic_ai()
+logfire.instrument_httpx(capture_all=True)
+# Bridge existing stdlib `log.*` calls into Logfire so they show up alongside spans.
+logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
 
 REQUIRED = ("LITELLM_API_KEY", "GITHUB_TOKEN")
 missing = [k for k in REQUIRED if not os.environ.get(k)]
@@ -34,7 +48,6 @@ PATTERN_SKILL_DIR = (
     / "skills-local/litellm-pattern-conformance-reviewer"
 )
 PATTERN_GATHER_SCRIPT = PATTERN_SKILL_DIR / "scripts/gather_pattern_data.py"
-PR_URL_RE = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 
 # SKILL.md tells the model to shell out to the gather script. We expose that as a
 # typed tool instead so the agent never gets a generic Bash. This prefix overrides
@@ -61,22 +74,29 @@ pattern_agent = Agent(model, system_prompt=PATTERN_SYSTEM_PROMPT)
 
 
 def _run_gather_script(script: Path, pr_ref: str) -> dict:
-    proc = subprocess.run(
-        ["python", str(script), pr_ref],
-        capture_output=True,
-        text=True,
-        env=os.environ.copy(),
-    )
-    if proc.returncode != 0:
-        raise ModelRetry(
-            f"gather script failed (exit {proc.returncode}): {proc.stderr.strip()}"
+    with logfire.span(
+        "gather_script {script_name}",
+        script_name=script.name,
+        pr_ref=pr_ref,
+    ) as span:
+        proc = subprocess.run(
+            ["python", str(script), pr_ref],
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
         )
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        raise ModelRetry(
-            f"gather script returned non-JSON: {e}; stdout head: {proc.stdout[:200]}"
-        )
+        span.set_attribute("exit_code", proc.returncode)
+        span.set_attribute("stdout_bytes", len(proc.stdout))
+        if proc.returncode != 0:
+            raise ModelRetry(
+                f"gather script failed (exit {proc.returncode}): {proc.stderr.strip()}"
+            )
+        try:
+            return json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            raise ModelRetry(
+                f"gather script returned non-JSON: {e}; stdout head: {proc.stdout[:200]}"
+            )
 
 
 @agent.tool_plain
@@ -122,22 +142,7 @@ async def _run_one(
 
 
 app = FastAPI()
-
-# Slack is optional so you can boot the app for local /chat testing without real
-# Slack creds. If both env vars are set we mount the /slack/events route.
-bolt = None
-slack_handler = None
-if os.environ.get("SLACK_BOT_TOKEN") and os.environ.get("SLACK_SIGNING_SECRET"):
-    from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
-    from slack_bolt.async_app import AsyncApp
-
-    bolt = AsyncApp(
-        token=os.environ["SLACK_BOT_TOKEN"],
-        signing_secret=os.environ["SLACK_SIGNING_SECRET"],
-    )
-    slack_handler = AsyncSlackRequestHandler(bolt)
-else:
-    log.warning("SLACK_BOT_TOKEN/SLACK_SIGNING_SECRET unset; /slack/events disabled")
+logfire.instrument_fastapi(app, capture_headers=True)
 
 
 def _extract_tool_trace(messages) -> list[dict]:
@@ -163,60 +168,42 @@ async def review_pr(pr_url: str, channel: str, thread_ts: str) -> None:
     """Run both the CI triage agent and the pattern conformance agent in
     parallel and post a single two-section reply in the thread.
     """
-    if bolt is None:
-        log.error("review_pr called without Slack configured url=%s", pr_url)
-        return
-
-    triage_prompt = f"Triage this PR: {pr_url}"
-    pattern_prompt = f"Review this PR for pattern conformance: {pr_url}"
-    (triage_text, _), (pattern_text, _) = await asyncio.gather(
-        _run_one(agent, triage_prompt),
-        _run_one(pattern_agent, pattern_prompt),
-    )
-
-    body = (
-        f"*Review:* {pr_url}\n\n"
-        f"*CI Triage*\n{triage_text}\n\n"
-        f"*Pattern Conformance*\n{pattern_text}"
-    )
-    await bolt.client.chat_postMessage(
-        channel=channel, thread_ts=thread_ts, text=body
-    )
-    log.info(
-        "posted_review url=%s triage_chars=%s pattern_chars=%s",
-        pr_url,
-        len(triage_text),
-        len(pattern_text),
-    )
-
-
-async def handle_mention(event, say) -> None:
-    text = event.get("text", "")
-    thread_ts = event.get("thread_ts") or event["ts"]
-    channel = event["channel"]
-
-    match = PR_URL_RE.search(text)
-    if not match:
-        await say(
-            text="Give me a GitHub PR URL, e.g. `@bot https://github.com/BerriAI/litellm/pull/123`",
-            thread_ts=thread_ts,
-        )
-        return
-
-    pr_url = match.group(0)
-    await say(
-        text=f":eyes: reviewing {pr_url} (CI triage + pattern conformance)...",
+    # Background task spawned via asyncio.create_task; opening a root span here
+    # so the two parallel agent runs and the Slack post share one trace.
+    with logfire.span(
+        "review_pr",
+        pr_url=pr_url,
+        channel=channel,
         thread_ts=thread_ts,
-    )
-    asyncio.create_task(review_pr(pr_url, channel, thread_ts))
+    ):
+        if not slack_handler.is_enabled():
+            log.error("review_pr called without Slack configured url=%s", pr_url)
+            return
+
+        triage_prompt = f"Triage this PR: {pr_url}"
+        pattern_prompt = f"Review this PR for pattern conformance: {pr_url}"
+        (triage_text, _), (pattern_text, _) = await asyncio.gather(
+            _run_one(agent, triage_prompt),
+            _run_one(pattern_agent, pattern_prompt),
+        )
+
+        body = (
+            f"*Review:* {pr_url}\n\n"
+            f"*CI Triage*\n{triage_text}\n\n"
+            f"*Pattern Conformance*\n{pattern_text}"
+        )
+        await slack_handler.bolt.client.chat_postMessage(
+            channel=channel, thread_ts=thread_ts, text=body
+        )
+        log.info(
+            "posted_review url=%s triage_chars=%s pattern_chars=%s",
+            pr_url,
+            len(triage_text),
+            len(pattern_text),
+        )
 
 
-if bolt is not None:
-    bolt.event("app_mention")(handle_mention)
-
-    @app.post("/slack/events")
-    async def slack_events(req: Request):
-        return await slack_handler.handle(req)
+slack_handler.mount(app, on_pr_review=review_pr)
 
 
 # --- Local dev chat UI ---------------------------------------------------------
