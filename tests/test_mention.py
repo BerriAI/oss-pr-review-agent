@@ -21,10 +21,16 @@ class FakeSay:
 
 @pytest.fixture
 def env(monkeypatch):
-    review_calls: list[tuple[str, str, str]] = []
+    review_calls: list[dict] = []
 
     async def fake_review(pr_url, channel, thread_ts):
-        review_calls.append((pr_url, channel, thread_ts))
+        review_calls.append(
+            {
+                "pr_url": pr_url,
+                "channel": channel,
+                "thread_ts": thread_ts,
+            }
+        )
 
     monkeypatch.setattr(app_mod, "review_pr", fake_review)
     return review_calls
@@ -57,11 +63,50 @@ def test_mention_with_pr_url_triggers_review(env):
     say = asyncio.run(invoke(event))
 
     assert len(review_calls) == 1
-    pr_url, channel, thread_ts = review_calls[0]
-    assert pr_url == "https://github.com/BerriAI/litellm/pull/42"
-    assert channel == "C456"
-    assert thread_ts == "1700000000.000100"
+    call = review_calls[0]
+    assert call["pr_url"] == "https://github.com/BerriAI/litellm/pull/42"
+    assert call["channel"] == "C456"
+    assert call["thread_ts"] == "1700000000.000100"
     assert any(":eyes:" in c["text"] for c in say.calls)
+    assert any("CI triage + pattern conformance" in c["text"] for c in say.calls)
+
+
+def test_review_pr_runs_both_agents_and_posts_one_combined_message(monkeypatch):
+    """review_pr should run both agents in parallel and post a single Slack
+    message with both 'CI Triage' and 'Pattern Conformance' sections.
+    """
+    run_calls: list[tuple[str, str]] = []
+
+    async def fake_run_one(selected_agent, prompt, history=None):
+        name = "triage" if selected_agent is app_mod.agent else "pattern"
+        run_calls.append((name, prompt))
+        return (f"{name} verdict for {prompt}", [])
+
+    posts: list[dict] = []
+
+    class FakeSlackClient:
+        async def chat_postMessage(self, **kwargs):
+            posts.append(kwargs)
+
+    class FakeBolt:
+        client = FakeSlackClient()
+
+    monkeypatch.setattr(app_mod, "_run_one", fake_run_one)
+    monkeypatch.setattr(app_mod, "bolt", FakeBolt())
+
+    asyncio.run(
+        app_mod.review_pr(
+            "https://github.com/BerriAI/litellm/pull/77", "C1", "1700.000200"
+        )
+    )
+
+    names = sorted(name for name, _ in run_calls)
+    assert names == ["pattern", "triage"]
+    assert len(posts) == 1
+    body = posts[0]["text"]
+    assert "*CI Triage*" in body
+    assert "*Pattern Conformance*" in body
+    assert "https://github.com/BerriAI/litellm/pull/77" in body
 
 
 def test_mention_without_url_prompts_for_one(env):
@@ -84,8 +129,7 @@ def test_mention_in_thread_replies_in_same_thread(env):
     asyncio.run(invoke(event))
 
     assert len(review_calls) == 1
-    _, _, thread_ts = review_calls[0]
-    assert thread_ts == "1700000000.000100"
+    assert review_calls[0]["thread_ts"] == "1700000000.000100"
 
 
 def test_mention_top_level_uses_message_ts_as_thread(env):
@@ -93,8 +137,7 @@ def test_mention_top_level_uses_message_ts_as_thread(env):
     event = mention_event("<@U999BOT> https://github.com/BerriAI/litellm/pull/7")
     asyncio.run(invoke(event))
 
-    _, _, thread_ts = review_calls[0]
-    assert thread_ts == "1700000000.000100"
+    assert review_calls[0]["thread_ts"] == "1700000000.000100"
 
 
 def test_pr_url_regex_rejects_non_pr_links(env):
