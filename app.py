@@ -1151,9 +1151,11 @@ async def _run_pattern(
 CHAT_SYSTEM_PROMPT = (
     "You are the litellm-bot dev assistant.\n\n"
     "You have two skills, exposed as tools:\n"
-    "1. run_pr_review(pr_url) — full PR triage + pattern review. Use this "
-    "whenever the user mentions a GitHub PR (URL or `owner/repo#N`). Return "
-    "its output verbatim; do not paraphrase the card.\n"
+    "1. run_pr_review(pr_urls) — full PR triage + pattern review. Use this "
+    "whenever the user mentions one or more GitHub PRs (URLs or `owner/repo#N`). "
+    "Pass every PR they mention in a single call as a list — multiple PRs are "
+    "reviewed in parallel. Never loop the tool yourself. Return its output "
+    "verbatim; do not paraphrase the card(s).\n"
     "2. add_memory(text) / reset_memory() — long-term memory. The current "
     "memory doc is shown to you below; you don't need a 'read' tool. Call "
     "add_memory whenever the user asks you to remember a stable fact "
@@ -1220,17 +1222,26 @@ async def reset_memory() -> dict:
     return {"memory": ""}
 
 
-@chat_agent.tool_plain
-async def run_pr_review(pr_url: str) -> str:
-    """Run full triage + pattern review on a PR and return the rendered card
-    (plus drill-down). Use this for any PR triage / merge-readiness request.
+# Cap on concurrent PR reviews when the agent passes more than one URL. Each
+# review fans out to two agent runs (triage + pattern), each of which spawns a
+# gather subprocess that hits GitHub + Greptile. 5 in flight = 10 agent runs =
+# 10 subprocesses, which is the most we can sustain without tripping GitHub
+# secondary rate limits or saturating the LiteLLM proxy. Tune via env var if
+# your proxy/quota is bigger.
+_BATCH_REVIEW_CONCURRENCY = int(os.environ.get("BATCH_REVIEW_CONCURRENCY", "5"))
+# Hard cap on URLs per call. The chat agent occasionally hallucinates a 50-item
+# list when the user pastes a wall of text; this stops a runaway run from
+# costing $20 in tokens before anyone notices.
+_BATCH_REVIEW_MAX = 25
 
-    Args:
-        pr_url: A GitHub PR URL or short ref (owner/repo#N).
+
+async def _review_one_pr(pr_url: str) -> str:
+    """Single-PR review: triage + pattern in parallel, fused into one card.
+
+    Mirrors review_pr's observability so dev-chat-driven runs also emit the
+    silent-failure canary. Same attribute names so a single Logfire query
+    covers both paths.
     """
-    # Mirror review_pr's observability so dev-chat-driven runs also emit the
-    # silent-failure canary. Same attribute names so a single Logfire query
-    # covers both paths.
     with logfire.span("run_pr_review", pr_url=pr_url) as span:
         ctx = await _memory_context()
         triage_prompt = f"{ctx}Triage this PR: {pr_url}"
@@ -1280,6 +1291,66 @@ async def run_pr_review(pr_url: str) -> str:
                 triage.pr_related_failures + triage.unrelated_failures,
             )
         return render_card(card) + "\n\n---\n\n" + render_drilldown(triage, pattern)
+
+
+@chat_agent.tool_plain
+async def run_pr_review(pr_urls: list[str]) -> str:
+    """Run full triage + pattern review on one or more PRs and return the
+    rendered card(s). Pass every PR the user mentioned in a single call —
+    multiple PRs are reviewed in parallel under a concurrency cap, so 10 PRs
+    don't take 10x as long as 1.
+
+    Args:
+        pr_urls: List of GitHub PR URLs or short refs (owner/repo#N). Pass a
+                 single-element list for one PR. Capped at 25 per call; deduped
+                 while preserving order.
+    """
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for url in pr_urls:
+        if url and url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    if not deduped:
+        return "No PR URLs provided."
+
+    truncation_note = ""
+    if len(deduped) > _BATCH_REVIEW_MAX:
+        dropped = len(deduped) - _BATCH_REVIEW_MAX
+        deduped = deduped[:_BATCH_REVIEW_MAX]
+        truncation_note = (
+            f"\n\n_(Truncated to {_BATCH_REVIEW_MAX} PRs; {dropped} skipped.)_"
+        )
+
+    # Single-PR fast path: skip the semaphore + header + separator so the
+    # output is byte-identical to the pre-batch version. Keeps the existing
+    # passthrough contract intact for the common case.
+    if len(deduped) == 1 and not truncation_note:
+        return await _review_one_pr(deduped[0])
+
+    sem = asyncio.Semaphore(_BATCH_REVIEW_CONCURRENCY)
+
+    async def _one(url: str) -> str:
+        async with sem:
+            try:
+                return await _review_one_pr(url)
+            except Exception as e:
+                log.exception("batch_review_failed url=%s", url)
+                return render_fallback_card(url, str(e))
+
+    with logfire.span(
+        "run_pr_review_batch",
+        pr_count=len(deduped),
+        concurrency=_BATCH_REVIEW_CONCURRENCY,
+    ):
+        cards = await asyncio.gather(*(_one(u) for u in deduped))
+
+    # Heavy separator so each card stays visually distinct in the chat log
+    # (single `---` already appears inside each card between the summary and
+    # the drill-down section).
+    sep = "\n\n=============================\n\n"
+    header = f"Reviewed {len(deduped)} PRs:\n\n"
+    return header + sep.join(cards) + truncation_note
 
 
 # --- Memory-merger capability description (auto-derived) ----------------------
