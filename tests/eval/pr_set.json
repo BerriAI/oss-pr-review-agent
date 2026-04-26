@@ -95,7 +95,7 @@
       "url": "https://github.com/BerriAI/litellm/pull/26511",
       "category": "merged_ci",
       "notes": "Merged: CI supply-chain guard for fork PRs. .github/workflows-only diff — should classify as no-runtime-impact.",
-      "human_label": "not_ready",
+      "human_label": "ready",
       "human_notes": "4/5 on Greptile, CircleCI unrelated failing test (1 failed due to infra failure — seems to be impacting other PRs too). Veria — no security risk."
     },
     {

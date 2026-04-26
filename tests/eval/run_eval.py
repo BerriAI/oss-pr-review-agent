@@ -57,7 +57,7 @@ load_dotenv(REPO_ROOT / ".env")
 import app as app_mod  # noqa: E402
 
 EVAL_DIR = Path(__file__).resolve().parent
-PR_SET_PATH = EVAL_DIR / "pr_set.json"
+DEFAULT_PR_SET_PATH = EVAL_DIR / "pr_set.json"
 RESULTS_ROOT = EVAL_DIR / "results"
 
 # Bounded concurrency to avoid hammering LiteLLM / GitHub. 4 in flight is
@@ -71,8 +71,8 @@ DEFAULT_CONCURRENCY = int(os.environ.get("EVAL_CONCURRENCY", "4"))
 RESULTS_SCHEMA_VERSION = 1
 
 
-def _load_pr_set() -> dict[str, Any]:
-    with PR_SET_PATH.open() as f:
+def _load_pr_set(path: Path = DEFAULT_PR_SET_PATH) -> dict[str, Any]:
+    with path.open() as f:
         return json.load(f)
 
 
@@ -100,8 +100,18 @@ async def _eval_one_pr(
     }
     async with sem:
         t0 = time.perf_counter()
-        triage_prompt = f"Triage this PR: {url}"
-        pattern_prompt = f"Review this PR for pattern conformance: {url}"
+        # Mirror the prod path in app.run_pr_review / slack_handler: the
+        # memory doc is fetched and prepended as a "User context" block to
+        # both prompts so triage + pattern see the same stable repo
+        # conventions a real Slack/chat run would. Without this the eval
+        # tests an artificial "stock-skill" path that doesn't match what
+        # actual users see, and any memory-driven calibration (e.g. the
+        # repo conventions seeded under the bot's AGENT_ID) is invisible
+        # to the eval — which is exactly the gap that hid the missing
+        # convention-block from earlier eval rounds.
+        ctx = await app_mod._memory_context()
+        triage_prompt = f"{ctx}Triage this PR: {url}"
+        pattern_prompt = f"{ctx}Review this PR for pattern conformance: {url}"
         try:
             (triage, _, triage_err), (pattern, _, pattern_err) = await asyncio.gather(
                 app_mod._run_triage(triage_prompt),
@@ -371,6 +381,7 @@ def _summary_markdown(
 async def run_eval(
     concurrency: int = DEFAULT_CONCURRENCY,
     limit: int | None = None,
+    pr_set_path: Path = DEFAULT_PR_SET_PATH,
 ) -> Path:
     """Run the eval end-to-end. Returns the results directory path.
 
@@ -378,14 +389,19 @@ async def run_eval(
     used by smoke runs from the CLI to validate wiring without paying
     for the full set. The dump still labels itself with the curated
     set's repo so the artifact shape matches a full run.
+
+    `pr_set_path` lets callers swap in an alternate curated set
+    (e.g. pr_set_v2.json) without editing the default. The set's
+    filename stem is included in the results directory name so
+    multiple sets don't collide on the same UTC second.
     """
-    pr_set = _load_pr_set()
+    pr_set = _load_pr_set(pr_set_path)
     if limit is not None:
         pr_set = {**pr_set, "prs": pr_set["prs"][:limit]}
     sem = asyncio.Semaphore(concurrency)
     started = datetime.now(timezone.utc)
     started_iso = started.strftime("%Y-%m-%dT%H-%M-%SZ")
-    out_dir = RESULTS_ROOT / started_iso
+    out_dir = RESULTS_ROOT / f"{started_iso}-{pr_set_path.stem}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(
@@ -472,7 +488,29 @@ def main() -> int:
         default=DEFAULT_CONCURRENCY,
         help=f"In-flight PR cap (default: {DEFAULT_CONCURRENCY}; also reads EVAL_CONCURRENCY).",
     )
+    parser.add_argument(
+        "--pr-set",
+        type=Path,
+        default=DEFAULT_PR_SET_PATH,
+        help=(
+            "Path to the PR set JSON to evaluate "
+            f"(default: {DEFAULT_PR_SET_PATH.name}). "
+            "Use this to run alternate curated sets like pr_set_v2.json."
+        ),
+    )
     args = parser.parse_args()
+    pr_set_path: Path = args.pr_set
+    if not pr_set_path.is_absolute():
+        # Resolve relative to repo root for usability — `--pr-set tests/eval/pr_set_v2.json`
+        # from the repo root should Just Work without the user thinking about cwd.
+        candidate = (REPO_ROOT / pr_set_path).resolve()
+        if candidate.exists():
+            pr_set_path = candidate
+        else:
+            pr_set_path = pr_set_path.resolve()
+    if not pr_set_path.exists():
+        print(f"[eval] PR set file not found: {pr_set_path}", file=sys.stderr)
+        return 2
 
     if not _is_real_token("LITELLM_API_KEY"):
         print(
@@ -488,7 +526,13 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    asyncio.run(run_eval(concurrency=args.concurrency, limit=args.limit))
+    asyncio.run(
+        run_eval(
+            concurrency=args.concurrency,
+            limit=args.limit,
+            pr_set_path=pr_set_path,
+        )
+    )
     return 0
 
 

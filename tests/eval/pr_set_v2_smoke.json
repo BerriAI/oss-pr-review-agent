@@ -1,0 +1,39 @@
+{
+  "_about": "Smoke set: the 4 problem PRs from v2 (2 false-pos, 2 true-pos targets) for the blast-radius rubric change.",
+  "repo": "BerriAI/litellm",
+  "_label_legend": {
+    "ready": "Human grader judged the PR ready for review (would map to agent verdict READY).",
+    "not_ready": "Human grader judged the PR NOT ready for review (would map to agent verdict BLOCKED, or WAITING when the only blocker is in-progress checks).",
+    "null": "Not yet graded by a human — agent verdict shown but no agree/disagree contribution to the matrix."
+  },
+  "prs": [
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26453",
+      "category": "cache_fix",
+      "notes": "Fix qdrant semantic cache. Greptile 5/5. All 44 checks green. No proof.",
+      "human_label": "ready",
+      "human_notes": "Greptile 5/5, small targeted fix, well-explained problem, low Veria warning."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26448",
+      "category": "guardrail_fix",
+      "notes": "fix(content_filter): log guardrail_information on streaming. Greptile 5/5. All 71 checks green.",
+      "human_label": "ready",
+      "human_notes": "Passing all testing, Greptile 5/5, low Veria. Would urge author to share a screenshot/proof of fix — that is missing."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26074",
+      "category": "wrong_approach_fix",
+      "notes": "Fix sets error_msg to None to suppress an error. Issue is real but the chosen approach masks the failure surface.",
+      "human_label": "not_ready",
+      "human_notes": "The approach is wrong. The issue is real, but the fix to make error_msg None would mean users can no longer understand why their request failed. Fails the principle of fixing bugs at the source, not at the sink."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26294",
+      "category": "dangerous_feature_flag",
+      "notes": "Deletes a set of imports and hides them behind a feature flag.",
+      "human_label": "not_ready",
+      "human_notes": "Dangerous PR. Deletes a bunch of imports and hides them behind a feature flag, but for existing proxy users this would mean those routes now just fail. Extremely dangerous — would lead to production down."
+    }
+  ]
+}

@@ -45,10 +45,13 @@ def _pattern(findings=None, tech_debt=None) -> PatternReport:
     return PatternReport(findings=findings or [], tech_debt=tech_debt or [])
 
 
-def _finding(severity="blocker", file="litellm/main.py") -> PatternFinding:
+def _finding(
+    severity="blocker", file="litellm/main.py", risk="low"
+) -> PatternFinding:
     return PatternFinding(
         file=file,
         severity=severity,
+        risk=risk,
         source="docs" if severity == "blocker" else "code",
         citation="docs/foo.md#bar" if severity == "blocker" else "litellm/sibling.py",
         rationale="rationale",
@@ -108,6 +111,140 @@ def test_suggestions_and_nits_do_not_dock():
         _triage(),
         _pattern(findings=[_finding("suggestion"), _finding("nit")]),
     )
+    assert card.score == 5
+    assert card.verdict == "READY"
+
+
+# --- Risk-based docks (orthogonal to severity) --------------------------------
+# Bug fixed here from the 2026-04-25 v2 eval: PRs #26294 (gated import that
+# silently 404s existing routes) and #26074 (error_msg = None that masks
+# failures) both got nit-severity findings and the old rubric ignored them.
+# Risk lets fuse dock on impact regardless of evidence strength.
+
+
+def test_high_risk_nit_finding_docks_2_and_blocks():
+    """A nit-severity finding flagged risk=high (e.g. lazy import gating a
+    public route, single sibling diverges) must dock 2 → BLOCKED. The whole
+    point of decoupling risk from severity is that thin evidence + bad shape
+    still has to block."""
+    card = fuse(
+        _triage(),
+        _pattern(findings=[_finding(severity="nit", risk="high")]),
+    )
+    assert card.score == 3
+    assert card.verdict == "BLOCKED"
+    assert "high-risk pattern finding" in card.justification
+
+
+def test_medium_risk_finding_docks_1_and_blocks():
+    """Medium risk = internal-contract change (helper-signature drift,
+    silent return-None instead of raise). Soft penalty, but enough to flip
+    READY → BLOCKED so the reviewer sees it."""
+    card = fuse(
+        _triage(),
+        _pattern(findings=[_finding(severity="nit", risk="medium")]),
+    )
+    assert card.score == 4
+    assert card.verdict == "BLOCKED"
+    assert "medium-risk pattern finding" in card.justification
+
+
+def test_low_risk_findings_do_not_dock():
+    """The default — risk=low matches pre-risk behavior. Cosmetic findings
+    (naming, formatting, layout) shouldn't move the score regardless of
+    severity."""
+    card = fuse(
+        _triage(),
+        _pattern(
+            findings=[
+                _finding(severity="suggestion", risk="low"),
+                _finding(severity="nit", risk="low"),
+            ]
+        ),
+    )
+    assert card.score == 5
+    assert card.verdict == "READY"
+
+
+def test_high_risk_one_liner_takes_priority_over_soft_penalties():
+    """When the only blockers left are pattern-risk + soft-failures, the
+    one-liner should call out the high-risk pattern finding by name — that's
+    the most actionable signal for the reviewer."""
+    card = fuse(
+        _triage(greptile_score=3),  # also docks 1, but lower priority
+        _pattern(findings=[_finding(severity="nit", risk="high")]),
+    )
+    assert card.verdict == "BLOCKED"
+    assert "high-risk pattern finding" in card.verdict_one_liner
+
+
+def test_high_and_medium_risk_findings_stack():
+    """One high (-2) + one medium (-1) → score 2/5. Independent rubric rows,
+    so both fire on the same report."""
+    card = fuse(
+        _triage(),
+        _pattern(
+            findings=[
+                _finding(severity="nit", risk="high", file="litellm/a.py"),
+                _finding(severity="nit", risk="medium", file="litellm/b.py"),
+            ]
+        ),
+    )
+    assert card.score == 2
+    assert card.verdict == "BLOCKED"
+
+
+def test_render_drilldown_sorts_high_risk_first_and_tags_risk():
+    """Reviewer's eye should land on the dangerous findings before the naming
+    nits, regardless of list order. Low-risk findings don't show the risk tag
+    (it's the default — printing it on every line is noise)."""
+    pattern = _pattern(
+        findings=[
+            _finding(severity="nit", risk="low", file="litellm/cosmetic.py"),
+            _finding(severity="nit", risk="high", file="litellm/dangerous.py"),
+        ]
+    )
+    text = render_drilldown(_triage(), pattern)
+    high_pos = text.find("dangerous.py")
+    low_pos = text.find("cosmetic.py")
+    assert 0 <= high_pos < low_pos, f"high-risk not first: {text!r}"
+    assert "risk=high" in text
+    assert "risk=low" not in text
+
+
+# --- Wide low-density fan-out -------------------------------------------------
+# Bug from BerriAI/litellm PR #26284: 66-file diff applying urllib.parse.quote()
+# inline at every callsite. Grader called it brittle because the next contributor
+# adding a similar callsite without remembering the helper silently regresses
+# the fix. Triage rubric now flags this shape directly from diff size metadata.
+
+
+def test_wide_low_density_fanout_docks_1():
+    """30+ files, <5 lines/file avg → fan-out dock. Picks up the inline-helper
+    -everywhere shape that's easy to silently regress."""
+    triage = _triage(files_changed=66, additions=120, deletions=10)
+    card = fuse(triage, _pattern())
+    # 130 lines / 66 files = 1.97 → triggers
+    assert card.score == 4
+    assert card.verdict == "BLOCKED"
+    assert "wide low-density fan-out" in card.justification
+
+
+def test_wide_fanout_does_not_fire_below_file_threshold():
+    """A focused 25-file change with the same per-file density should NOT
+    trigger — small diffs that touch a few callsites are normal refactors,
+    not the brittle-fanout shape."""
+    triage = _triage(files_changed=25, additions=40, deletions=10)
+    card = fuse(triage, _pattern())
+    assert card.score == 5
+    assert card.verdict == "READY"
+
+
+def test_wide_fanout_does_not_fire_when_density_high():
+    """A 50-file diff that adds 40+ lines per file is a real refactor (logic,
+    not find-replace) — don't penalize it. Threshold is <5 lines/file."""
+    triage = _triage(files_changed=50, additions=2000, deletions=200)
+    card = fuse(triage, _pattern())
     assert card.score == 5
     assert card.verdict == "READY"
 
@@ -220,6 +357,133 @@ def test_unrelated_failures_now_dock_one_and_flip_to_blocked():
     assert "code-quality" in card.justification
     assert "code-quality" in card.failing_line
     assert card.failing_line.startswith("⚠️")
+
+
+# --- Unique-vs-elsewhere split for unrelated failures -------------------------
+# Regression cases from the 2026-04-25 eval: PRs #26385 / #26011 / #26122 of
+# BerriAI/litellm got 4/5 BLOCKED for `lint` / `codecov` failures that were
+# also red on neighboring open PRs (clearly broken-for-everyone infra). The
+# rubric now docks ONLY for unrelated failures unique to this PR, leaving the
+# silent-pass canary armed for #26451-style cases.
+
+
+def test_unrelated_failure_also_failing_elsewhere_does_not_dock():
+    """Same `lint` failure red here AND on neighboring PRs → infra noise,
+    not docking. Score stays 5, verdict READY. The check still surfaces in
+    failing_line and justification so the reviewer sees we noticed."""
+    card = fuse(
+        _triage(
+            unrelated_failures=["lint"],
+            unrelated_failures_also_failing_elsewhere=["lint"],
+        ),
+        _pattern(),
+    )
+    assert card.score == 5
+    assert card.verdict == "READY"
+    assert "lint" in card.failing_line  # still shown, just not docked
+    # Justification on a READY card with all-elsewhere failures should
+    # honestly call out the also-red-on-other-PRs framing.
+    assert (
+        "neighboring" in card.justification.lower()
+        or "broken-for-everyone" in card.justification.lower()
+    )
+
+
+def test_unrelated_failure_unique_to_pr_still_docks():
+    """`code-quality` red here but NOT on neighbors → unique unrelated →
+    docks 1 → 4/5 → BLOCKED. Pins the silent-pass canary in place after the
+    split."""
+    card = fuse(
+        _triage(
+            unrelated_failures=["code-quality"],
+            unrelated_failures_also_failing_elsewhere=[],
+        ),
+        _pattern(),
+    )
+    assert card.score == 4
+    assert card.verdict == "BLOCKED"
+    assert "code-quality" in card.justification
+    assert "unique to this PR" in card.justification
+
+
+def test_mixed_unrelated_buckets_only_docks_for_unique_subset():
+    """Two unrelated failures, one cross-repo and one unique. Should dock
+    1 (for the unique one) and mention both in the justification — the
+    cross-repo one labeled as no-penalty so the reviewer sees the
+    distinction."""
+    card = fuse(
+        _triage(
+            unrelated_failures=["lint", "weird-suite"],
+            unrelated_failures_also_failing_elsewhere=["lint"],
+        ),
+        _pattern(),
+    )
+    assert card.score == 4
+    assert card.verdict == "BLOCKED"
+    assert "weird-suite" in card.justification
+    assert "lint" in card.justification
+    assert "no penalty" in card.justification.lower()
+
+
+def test_ready_card_with_all_elsewhere_failures_keeps_failing_line():
+    """READY + all unrelated failures are also-elsewhere: card must still
+    list the check names in failing_line so the user sees red checks even
+    on a READY verdict (the silent-pass guard from PR #26451)."""
+    card = fuse(
+        _triage(
+            unrelated_failures=["lint", "codecov"],
+            unrelated_failures_also_failing_elsewhere=["lint", "codecov"],
+        ),
+        _pattern(),
+    )
+    assert card.verdict == "READY"
+    assert "lint" in card.failing_line
+    assert "codecov" in card.failing_line
+
+
+# --- Policy/meta failures (zero-penalty bucket) ------------------------------
+# Regression case from the 2026-04-25 eval: PR #26419 of BerriAI/litellm got
+# 4/5 BLOCKED because `Verify PR source branch` failed. That check is a repo
+# policy ("PR not from main"), nothing to do with the diff. policy_meta_failures
+# is its own zero-penalty bucket so the rubric ignores it but the card still
+# surfaces the ask.
+
+
+def test_policy_meta_failure_does_not_dock():
+    """`Verify PR source branch` etc. should NOT dock the score. Card stays
+    READY and the meta failure surfaces in failing_line under its own glyph."""
+    card = fuse(
+        _triage(policy_meta_failures=["Verify PR source branch"]),
+        _pattern(),
+    )
+    assert card.score == 5
+    assert card.verdict == "READY"
+    assert "Verify PR source branch" in card.failing_line
+    # Different glyph than the warning glyph used for real failures so the
+    # eye doesn't read it as an error of equal weight.
+    assert "ℹ️" in card.failing_line
+
+
+def test_policy_meta_does_not_double_count_with_real_failures():
+    """A real PR-related failure docks 2; a co-occurring policy-meta failure
+    must NOT add an extra penalty. Score should match the no-policy baseline."""
+    triage_with_policy = _triage(
+        pr_related_failures=["test-foo"],
+        policy_meta_failures=["DCO"],
+    )
+    triage_no_policy = _triage(pr_related_failures=["test-foo"])
+    assert (
+        fuse(triage_with_policy, _pattern()).score
+        == fuse(triage_no_policy, _pattern()).score
+    )
+
+
+def test_render_drilldown_lists_policy_meta_failures():
+    triage = _triage(policy_meta_failures=["Verify PR source branch", "DCO"])
+    text = render_drilldown(triage, _pattern())
+    assert "Policy / meta failures" in text
+    assert "Verify PR source branch" in text
+    assert "DCO" in text
 
 
 # --- Rendering ----------------------------------------------------------------

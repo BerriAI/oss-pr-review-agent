@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import time
@@ -69,22 +70,61 @@ def _redirect(script_name: str, tool_name: str) -> str:
 # directly without forking. These prefixes are appended *after* the SKILL text
 # so the model reads them as the most recent (and overriding) instruction
 # before producing its final structured output.
-TRIAGE_OUTPUT_OVERRIDE = """
-OUTPUT OVERRIDE (supersedes Step 6 above):
+#
+# Single source of truth for the prose-formatting rule. Both override blocks
+# reference this so the wording can't drift between blocks. The validator
+# `_no_markdown_bold` enforces every marker named here; keep them in sync —
+# adding a marker (e.g. backtick-italics) means extending the validator too.
+_PROSE_RULE = (
+    "plain prose, no markdown bold (`**` / `__`) or italics (`*x*` / `_x_`)"
+)
 
-Ignore the "write the verdict" instructions in Step 6. Do not emit prose with
-overview / summary / details / file_callouts. Instead, return the
-TriageReport schema with these fields:
+# Stable grounding rule reused across both overrides. Consolidates what was
+# previously three scattered phrasings ("never guess" / "never speculate" /
+# "DEFAULT IS EMPTY") into one block the model integrates once. Also closes
+# the "what if the gather data is malformed?" gap — used to be undefined
+# behavior, now it's "return the schema default, never invent."
+_GROUNDING_RULE = """
+GROUNDING (applies to every field below):
+- State only what the gathered data shows. Never guess, never speculate.
+- If a field the spec references is missing or null in the gather output,
+  return the empty/null default for that schema field — do NOT invent one.
+- Lists default to []. Optional scalars default to null.
+"""
 
-- pr_number, pr_title, pr_author: from the gathered data
-- pr_summary: ONE paragraph (max 600 chars), plain prose, no markdown bold or
-  italics. Describe what the PR changes (infer from pr_title + diff_files).
-- files_changed: int. len(diff_files).
-- additions: int. sum of f["additions"] across diff_files.
-- deletions: int. sum of f["deletions"] across diff_files.
+TRIAGE_OUTPUT_OVERRIDE = f"""
+OUTPUT OVERRIDE (supersedes the "Step 6: write the verdict" section above):
+
+Ignore the "write the verdict" instructions in that section. Do not emit
+prose with overview / summary / details / file_callouts. Instead, return
+the TriageReport schema with these fields:
+{_GROUNDING_RULE}
+- pr_number, pr_title, pr_author: from the gathered data.
+- pr_summary: ONE paragraph (max 600 chars), {_PROSE_RULE}.
+  Describe what the PR changes (infer from pr_title + diff_files).
+  Target voice — concrete, load-bearing, no marketing tone. Example:
+    "Adds a `--retries` flag to the CLI so transient 5xx responses retry
+     up to N times with exponential backoff; touches cli.py and
+     http_client.py; default behavior unchanged when the flag is omitted."
+- files_changed, additions, deletions: leave at the schema default (0).
+  Python recomputes these deterministically from the gather output post-run
+  — anything you put here is overwritten, so don't waste reasoning on sums.
 - pr_related_failures: list of check names from failing_check_contexts where
-  related_to_pr_diff is True (per Step 2 classification rules).
-- unrelated_failures: list of check names where related_to_pr_diff is False.
+  the "Step 2: classify each failing check" rules above set
+  related_to_pr_diff=True AND is_policy_meta is False.
+- unrelated_failures: list of check names where related_to_pr_diff is False
+  AND is_policy_meta is False.
+- unrelated_failures_also_failing_elsewhere: SUBSET of unrelated_failures.
+  Algorithm:
+    for name in unrelated_failures:
+      include name iff failing_check_contexts[name].also_failing_on_other_prs
+      is True (already pre-derived by the gather script — copy it, do NOT
+      recompute from other_prs[*].conclusion).
+  Result MUST be a subset of unrelated_failures; the rubric depends on it.
+- policy_meta_failures: list of check names where is_policy_meta is True.
+  These are NEVER in pr_related_failures or unrelated_failures — separate
+  bucket. The rubric ignores them; surface them so the contributor knows
+  to fix (rebase, sign CLA, etc.) but not as a merge-confidence penalty.
 - running_checks: in_progress_checks verbatim.
 - greptile_score: the int from the gathered data, or null.
 - has_circleci_checks: bool from the gathered data.
@@ -94,26 +134,115 @@ TriageReport schema with these fields:
   "has_hooks". Set to null iff `mergeable` is null (GitHub still computing) or
   `mergeable_state` is "unknown" — never guess.
 
+Worked example (illustrative shape only — your values come from the gather
+output, not from this template):
+{{
+  "pr_number": 26451,
+  "pr_title": "fix: handle null tool_calls in streaming response",
+  "pr_author": "ishaan-jaff",
+  "pr_summary": "Guards the streaming response handler against a null tool_calls field that newer OpenAI responses can return; without the guard the handler raises AttributeError and the stream silently drops. No behavior change when tool_calls is present.",
+  "files_changed": 0,
+  "additions": 0,
+  "deletions": 0,
+  "pr_related_failures": ["code-quality"],
+  "unrelated_failures": ["lint", "codecov/patch"],
+  "unrelated_failures_also_failing_elsewhere": ["lint"],
+  "policy_meta_failures": [],
+  "running_checks": [],
+  "greptile_score": 4,
+  "has_circleci_checks": true,
+  "has_merge_conflicts": false
+}}
+
 Do not include any prose justification, summary, or details — Python composes
 those from these structured fields downstream. Your job ends at field-filling.
 """
 
-PATTERN_OUTPUT_OVERRIDE = """
-OUTPUT OVERRIDE (supersedes Step 4 above):
+# Pattern override is split into THREE blocks (schema / risk rubric /
+# rejection checklist) and composed into PATTERN_OUTPUT_OVERRIDE. Lets us
+# tune any one independently — e.g. updating the risk taxonomy doesn't
+# force a re-read of the schema or the rejection rules.
+_PATTERN_OUTPUT_SCHEMA = f"""
+OUTPUT OVERRIDE (supersedes the "Step 4" emit-prose section above):
 
-Ignore the "emit overview / summary" instructions in Step 4. Do not write
-prose. Return the PatternReport schema with these fields:
-
-- findings: list of {file, severity, source, citation, rationale} per Step 3
-  classification. Use severity blocker/suggestion/nit exactly as defined.
-  rationale max 200 chars, plain prose, no markdown bold or italics.
-- tech_debt: list of {doc_path, code_path, note} per the existing rule. note
-  max 200 chars.
+Ignore the "emit overview / summary" instructions in that section. Do not
+write prose. Return the PatternReport schema with these fields:
+{_GROUNDING_RULE}
+- findings: list of {{file, severity, risk, source, citation, rationale}}
+  per the "Step 3: classify" rules above. Use severity blocker/suggestion/nit
+  exactly as defined there. rationale max 200 chars, {_PROSE_RULE}.
+- tech_debt: list of {{doc_path, code_path, note}} per the existing rule.
+  note max 200 chars.
 
 If there are no findings, return findings: []. If no tech_debt, return [].
 Do not include overview or summary — Python composes the user-facing card
 from your findings list downstream.
 """
+
+_PATTERN_RISK_RUBRIC = """
+RISK FIELD — for every finding, also set `risk` to one of high/medium/low
+per the "Step 3.5" risk-assignment section of the SKILL above. Severity is
+evidence strength; risk is BLAST RADIUS if you're right. They are
+independent — a nit-severity finding can be high-risk and vice versa.
+
+Assign risk by answering two questions about the worst-case behavior if
+the finding is correct:
+
+  1. Who is affected? users / operators / developers / nobody
+  2. How does the bad state recover? unrecoverable / manual /
+     self-healing / not-yet-deployed
+
+Then look up the cell in this matrix:
+
+| recovery \\ affected | users  | operators | developers | nobody |
+|---------------------|--------|-----------|------------|--------|
+| unrecoverable       | high   | high      | medium     | low    |
+| manual              | high   | medium    | medium     | low    |
+| self-healing        | medium | low       | low        | low    |
+| not-yet-deployed    | low    | low       | low        | low    |
+
+State the (affected, recovery) pair in the rationale so a reviewer can
+audit the call — e.g. "(users, self-healing) → medium" for a cache
+format change, or "(users, manual) → high" for a removed import still
+referenced in a handler.
+
+When in doubt between two adjacent cells, pick the higher risk. A
+false-positive costs the reviewer 30s; a false-negative ships a bug.
+"""
+
+_PATTERN_REJECTION_RULES = """
+DEFAULT IS EMPTY. Most small focused PRs should produce findings: []. Only
+emit a finding when the patch text shows a concrete deviation from a cited
+doc or sibling — never to look thorough, never on truncated patches you
+can't read.
+
+REJECTION CHECKLIST — before emitting any finding, verify ALL of these
+or drop the finding silently. The cost of one false positive is the
+reviewer learning to ignore the agent on the next PR.
+
+1. Rationale describes what the patch DOES (visible in patch text), not
+   what it MIGHT do. Reject finding if rationale contains: "may", "might",
+   "could", "risks", "if never populated", "potentially", "unverifiable",
+   "cannot be verified", "if X happens".
+2. Rationale does NOT mention truncation or unreadable patches. Reject
+   if it contains: "patch is truncated", "truncated patch", "cannot
+   verify", "can't verify", "not visible in this patch". If you can't
+   read the change, you cannot make a finding about it.
+3. Conforms files emit nothing. Files classified `conforms` or
+   `no_pattern_found` in the "Step 3" classification produce zero findings.
+
+Must-flag triggers (the "Step 3.5" / SKILL hard-rules section) are NOT
+speculative — they describe shapes visible in the patch text. Apply them
+when the patch literally contains them: gated public-route imports,
+ERROR-METADATA fields (error_message / error_msg / error_information /
+exception_str / failure_reason — NOT general response/content fields) set
+to None/empty in non-test code, removal of an import still referenced in
+the diff, removal of public config defaults. These emit risk=high.
+"""
+
+PATTERN_OUTPUT_OVERRIDE = (
+    _PATTERN_OUTPUT_SCHEMA + _PATTERN_RISK_RUBRIC + _PATTERN_REJECTION_RULES
+)
 
 
 SYSTEM_PROMPT = (
@@ -138,12 +267,37 @@ PATTERN_SYSTEM_PROMPT = (
 # Pick numbers that fit comfortably in a Slack message without truncation.
 
 
+# Single-char emphasis (italics) detector. Matches `*x*` and `_x_` while
+# explicitly NOT matching:
+#   - `**bold**` / `__bold__`  (the bold case is checked separately so the
+#     error message stays specific)
+#   - snake_case identifiers  (boundary `\w` rejects `_` adjacent to a word
+#     char on either side)
+#   - lone `*` or `_` characters (must close on a matching delimiter)
+#   - delimiters with whitespace immediately inside (`* foo *`) — markdown
+#     parsers ignore those, so neither do we
+# Body capped at 200 chars to keep pathological inputs O(n).
+_ITALICS_RE = re.compile(
+    r"(?<![*_\w])([*_])(?=\S)(?:(?!\1).){1,200}?(?<=\S)\1(?![*_\w])"
+)
+
+
 def _no_markdown_bold(v: str) -> str:
-    """Hard-fail any agent prose that contains markdown bold; the deterministic
-    Slack rendering owns formatting end-to-end. Pydantic AI catches the
-    ValueError and retries the model with this message as feedback."""
+    """Hard-fail any agent prose that contains markdown emphasis; the
+    deterministic Slack rendering owns formatting end-to-end. Pydantic AI
+    catches the ValueError and retries the model with this message as
+    feedback. Name kept (`_no_markdown_bold`) for back-compat with the
+    existing field_validator bindings; the check now covers both bold AND
+    italics so the prompt's "no markdown bold or italics" rule is actually
+    enforced — used to be a silent gap where italic-formatted summaries
+    shipped through.
+    """
     if "**" in v or "__" in v:
         raise ValueError("text fields must not contain markdown bold (** or __)")
+    if _ITALICS_RE.search(v):
+        raise ValueError(
+            "text fields must not contain markdown italics (*word* or _word_)"
+        )
     return v
 
 
@@ -156,14 +310,39 @@ class TriageReport(BaseModel):
     # 1 paragraph: what the PR changes. Drives the *Triage Summary* line.
     pr_summary: str = Field(..., max_length=600)
     # Diff size, surfaced on the card so reviewers can eyeball whether a deeper
-    # pass is needed. Summed from diff_files in the gathered data; defaulted to
-    # 0 so older callers / the fallback card path don't have to construct them.
+    # pass is needed. Computed in Python from the gather payload via
+    # _overlay_diff_size after the agent run — the model is told (in
+    # TRIAGE_OUTPUT_OVERRIDE) to leave these at 0 because anything it emits
+    # gets overwritten. Defaulted to 0 so older callers / the fallback card
+    # path don't have to construct them, and so a missing gather payload
+    # degrades gracefully (size_line just renders empty).
     files_changed: int = Field(default=0, ge=0)
     additions: int = Field(default=0, ge=0)
     deletions: int = Field(default=0, ge=0)
     # Check names only. Classification logic lives in the SKILL.
     pr_related_failures: list[str] = Field(default_factory=list)
     unrelated_failures: list[str] = Field(default_factory=list)
+    # Subset of unrelated_failures that were ALSO failing on at least one of
+    # the sampled `other_prs` (gather script's `failing_check_contexts[*].
+    # other_prs` field). Distinguishes "infra flake breaking everyone" from
+    # "infra-shaped failure unique to this PR". Drives the rubric so the
+    # latter still docks 1 (silent-pass canary stays armed) while the former
+    # only docks 0 — the bug we hit on PRs #26385 / #26011 / #26122 where
+    # the agent flipped to BLOCKED on infra noise the reviewer shrugged off.
+    # Names here MUST also appear in unrelated_failures (subset relationship);
+    # the rubric assumes that and won't fire double-penalties.
+    unrelated_failures_also_failing_elsewhere: list[str] = Field(default_factory=list)
+    # Policy/meta checks (e.g. `Verify PR source branch`, `DCO`, `cla-bot`)
+    # that operate on PR shape, not code. Pre-flagged by the gather script
+    # via `failing_check_contexts[*].is_policy_meta`. NEVER appear in
+    # pr_related_failures or unrelated_failures — they live in their own
+    # zero-penalty bucket because their failure tells the reviewer nothing
+    # about the diff. Surface them on the card so the contributor still
+    # knows to fix the policy issue (rebase from upstream main, sign the
+    # CLA, etc.); just don't dock the merge-confidence score for them.
+    # Recovered #26419 from the 2026-04-25 eval where a UI dropdown PR got
+    # 4/5 BLOCKED because `Verify PR source branch` failed.
+    policy_meta_failures: list[str] = Field(default_factory=list)
     running_checks: list[str] = Field(default_factory=list)
     greptile_score: int | None = None
     has_circleci_checks: bool
@@ -179,16 +358,35 @@ class TriageReport(BaseModel):
 
 class PatternFinding(BaseModel):
     file: str
+    # `severity` = evidence strength (how confident the finding is true).
+    # `risk` = impact strength (how bad if true). The two are orthogonal.
+    # Eval lesson from BerriAI/litellm PRs #26294 and #26074: a pattern
+    # reviewer that only sees evidence-count buckets a "lazy import gating
+    # a public route" as `nit` (only one sibling diverges) and an
+    # "error_msg = None" as `nit` (single-file, no doc), even though both
+    # are production-down-class risks. Splitting risk out lets fuse() dock
+    # on impact regardless of how thin the evidence is, and lets the human
+    # reading the card see "yes I'm only 60% sure, but if I'm right this
+    # breaks prod" as a first-class signal.
     severity: Literal["blocker", "suggestion", "nit"]
+    # Default `low` for back-compat: any older agent output (or test fixture)
+    # that omits `risk` parses as low-risk and behaves like the pre-risk
+    # rubric. New runs are expected to populate it per Step 3.5 of the
+    # pattern SKILL.
+    risk: Literal["high", "medium", "low"] = "low"
     source: Literal["docs", "code"]
     citation: str
     rationale: str = Field(..., max_length=200)
+
+    _strip_emphasis = field_validator("rationale")(_no_markdown_bold)
 
 
 class TechDebtItem(BaseModel):
     doc_path: str
     code_path: str
     note: str = Field(..., max_length=200)
+
+    _strip_emphasis = field_validator("note")(_no_markdown_bold)
 
 
 class PatternReport(BaseModel):
@@ -233,6 +431,45 @@ def _count(p: PatternReport, sev: str) -> int:
     return sum(1 for f in p.findings if f.severity == sev)
 
 
+def _count_risk(p: PatternReport, risk: str) -> int:
+    return sum(1 for f in p.findings if f.risk == risk)
+
+
+# Wide-fan-out heuristic. A patch that touches lots of files but adds very
+# few lines per file is structurally suspect: it tends to be a "find-replace
+# or apply-this-helper-everywhere" change where the next contributor who
+# adds a similar callsite without remembering the helper silently regresses
+# the fix. Eval lesson from BerriAI/litellm PR #26284 (66 files, inline
+# urllib.parse.quote() at every callsite). Thresholds picked to NOT trip
+# legitimate large refactors (which are usually deletion-heavy or have
+# meaningful per-file logic) — see test_fuse.py for the boundary cases.
+_WIDE_FANOUT_FILE_THRESHOLD = 30
+_WIDE_FANOUT_LINES_PER_FILE = 5
+
+
+def _is_wide_low_density_fanout(t: TriageReport) -> bool:
+    if t.files_changed < _WIDE_FANOUT_FILE_THRESHOLD:
+        return False
+    total = t.additions + t.deletions
+    return (total / t.files_changed) < _WIDE_FANOUT_LINES_PER_FILE
+
+
+def _unrelated_unique_to_pr(t: TriageReport) -> list[str]:
+    """Unrelated failures that are NOT also red on the sampled other_prs.
+
+    These are the only unrelated failures that should dock the score:
+    a check failing here AND on neighboring PRs is infra/repo-wide noise
+    the contributor can't fix; docking for it is just punishing them for
+    being downstream of someone else's outage. A check failing only here
+    is suspicious — bucketed unrelated by the model but maybe wrongly,
+    so the silent-pass canary still needs to fire.
+
+    Order-preserving so the user-facing list keeps the model's ordering.
+    """
+    elsewhere = set(t.unrelated_failures_also_failing_elsewhere)
+    return [n for n in t.unrelated_failures if n not in elsewhere]
+
+
 # Rubric: one row per penalty. Each row is (weight, predicate, label_fn).
 # label_fn returns the human-readable reason that lands in the justification.
 # Edit this table to retune scoring; everything else flows from it.
@@ -264,6 +501,40 @@ _RUBRIC: list[_RubricRow] = [
         lambda t, p: f"{_plural(_count(p, 'blocker'), 'doc violation')} "
         f"({_join([f.file for f in p.findings if f.severity == 'blocker'])})",
     ),
+    # Risk-based docks. Severity is "how confident am I"; risk is "how bad
+    # if I'm right". Decoupling them lets a low-evidence finding still block
+    # when the underlying change pattern is production-down-class. See the
+    # PatternFinding docstring + the 2026-04-25 v2-eval misses on PRs #26294
+    # (gated import → silent route 404) and #26074 (error_msg = None →
+    # masked failure surface) — both got nit findings the old rubric ignored.
+    (
+        2,
+        lambda t, p: any(f.risk == "high" for f in p.findings),
+        lambda t, p: f"{_plural(_count_risk(p, 'high'), 'high-risk pattern finding')} "
+        f"({_join([f.file for f in p.findings if f.risk == 'high'])})",
+    ),
+    (
+        1,
+        lambda t, p: any(f.risk == "medium" for f in p.findings),
+        lambda t, p: f"{_plural(_count_risk(p, 'medium'), 'medium-risk pattern finding')} "
+        f"({_join([f.file for f in p.findings if f.risk == 'medium'])})",
+    ),
+    # Wide low-density fan-out. Catches the brittle-helper-everywhere shape
+    # where a patch touches many files but barely changes any of them — the
+    # exact pattern the human grader called out as "if someone adds a new
+    # file later and forgets the helper, we're back to square one." Lives
+    # on triage (not pattern) because the file count + line count come from
+    # the diff metadata, not from sibling/doc analysis. Soft penalty so
+    # legitimate wide refactors aren't unfairly buried — they'll typically
+    # also fail one of the heavier rows (tests, doc-violation, CI).
+    (
+        1,
+        lambda t, p: _is_wide_low_density_fanout(t),
+        lambda t, p: f"wide low-density fan-out "
+        f"({t.files_changed} files, +{t.additions}/-{t.deletions}) "
+        f"— inline change duplicated across many sites is brittle; "
+        f"prefer a single-source helper that future callsites can't miss",
+    ),
     (
         1,
         lambda t, p: t.greptile_score is not None and t.greptile_score < 4,
@@ -274,19 +545,28 @@ _RUBRIC: list[_RubricRow] = [
         lambda t, p: t.greptile_score is None,
         lambda t, p: "Greptile has not reviewed this PR yet",
     ),
-    # Soft-dock for unrelated failures so a READY card never silently swallows
-    # a red check. PR #26451 of BerriAI/litellm shipped a 5/5 READY card while
-    # `code-quality` was failing because the model bucketed it as unrelated
-    # (null log + annotations only mentioned `.github`) and the rubric had no
-    # row for that bucket. Weight 1, not 2: the model's "unrelated" judgement
-    # might be right (real infra flake), so the verdict drops to BLOCKED but
-    # not as hard as a confirmed PR-related failure. Either way the failure
-    # name lands in the justification + the card's failing_line.
+    # Soft-dock for unrelated failures UNIQUE TO THIS PR so a READY card
+    # never silently swallows a red check the model can't explain by
+    # pointing at neighboring PRs. PR #26451 of BerriAI/litellm shipped
+    # a 5/5 READY card while `code-quality` was failing because the model
+    # bucketed it as unrelated (null log + annotations only mentioned
+    # `.github`) and the rubric had no row for that bucket.
+    #
+    # Weight 1 because the model might still be right (real infra flake),
+    # so the verdict drops to BLOCKED but not as hard as a confirmed
+    # PR-related failure. Either way the failure name lands in the
+    # justification + the card's failing_line.
+    #
+    # Filtered through `_unrelated_unique_to_pr` so a failure ALSO red on
+    # sampled other_prs (clearly broken-for-everyone infra) does NOT dock
+    # — fixed the false-BLOCKED on PRs #26385 / #26011 / #26122 from the
+    # 2026-04-25 eval, where one-line bumps got 4/5 BLOCKED for cross-repo
+    # `lint` / `codecov` flakes the human grader correctly read as noise.
     (
         1,
-        lambda t, p: bool(t.unrelated_failures),
-        lambda t, p: f"{_plural(len(t.unrelated_failures), 'unrelated CI failure')} "
-        f"({_join(t.unrelated_failures)})",
+        lambda t, p: bool(_unrelated_unique_to_pr(t)),
+        lambda t, p: f"{_plural(len(_unrelated_unique_to_pr(t)), 'unrelated CI failure')} "
+        f"unique to this PR ({_join(_unrelated_unique_to_pr(t))})",
     ),
     # Note: missing CircleCI is intentionally NOT a penalty. OSS PRs from
     # external contributors often can't trigger CircleCI (it's gated on repo
@@ -318,6 +598,13 @@ def _compose_one_liner(
     blocker_n = _count(pattern, "blocker")
     if blocker_n:
         return f"{_plural(blocker_n, 'pattern blocker')} need fixes first."
+    # High-risk findings come next in the priority chain because they signal
+    # production-impact pattern smells (gated public-route imports, silent
+    # error suppression, etc.) — louder than a vanilla soft penalty even
+    # when evidence is thin.
+    high_risk_n = _count_risk(pattern, "high")
+    if high_risk_n:
+        return f"{_plural(high_risk_n, 'high-risk pattern finding')} need a closer look first."
     # Only soft penalties left → name the top one verbatim.
     return penalties[0][:1].upper() + penalties[0][1:] + "."
 
@@ -348,16 +635,17 @@ def _compose_justification(
         )
         # Even a READY card must name any failing checks the model bucketed as
         # unrelated, otherwise the user reads "All checks green" while the PR
-        # has a red ❌ in GitHub. With the new unrelated-failures rubric row
-        # this branch is rarely hit (any unrelated failure → score 4 → BLOCKED),
-        # but keep the explicit enumeration here in case the rubric changes.
+        # has a red ❌ in GitHub. After the unique-vs-elsewhere split, READY
+        # implies every unrelated failure was ALSO red on neighboring PRs
+        # (otherwise the unique-only rubric row would have docked → BLOCKED),
+        # so the prose can call that out honestly instead of just "verify".
         if triage.unrelated_failures:
             return (
                 f"Greptile {triage.greptile_score}/5, "
                 f"no blocking pattern findings, {ci_note}. "
-                f"{_plural(len(triage.unrelated_failures), 'check')} failing but "
-                f"classified as unrelated to this diff: "
-                f"{_join(triage.unrelated_failures)} — verify before merge."
+                f"{_plural(len(triage.unrelated_failures), 'check')} failing "
+                f"but also red on neighboring PRs (broken-for-everyone infra): "
+                f"{_join(triage.unrelated_failures)}."
             )
         return (
             f"All checks green. Greptile {triage.greptile_score}/5, "
@@ -366,10 +654,22 @@ def _compose_justification(
     sentences: list[str] = []
     if penalties:
         sentences.append("Score docked for: " + "; ".join(penalties) + ".")
-    if triage.unrelated_failures:
+    # Two separate sentences for the two unrelated buckets. The unique-to-PR
+    # subset is what the rubric just docked (already in penalties); call it
+    # out by name. The "also failing elsewhere" subset is non-docking — say
+    # so explicitly so the reviewer knows we saw it and chose not to penalize.
+    unique = _unrelated_unique_to_pr(triage)
+    if unique:
         sentences.append(
-            f"{_plural(len(triage.unrelated_failures), 'unrelated CI failure')} "
-            f"({_join(triage.unrelated_failures)}) — not related to this diff."
+            f"{_plural(len(unique), 'unrelated CI failure')} unique to this PR "
+            f"({_join(unique)}) — not related to this diff but worth a glance."
+        )
+    if triage.unrelated_failures_also_failing_elsewhere:
+        sentences.append(
+            f"{_plural(len(triage.unrelated_failures_also_failing_elsewhere), 'check')} "
+            f"also red on neighboring PRs "
+            f"({_join(triage.unrelated_failures_also_failing_elsewhere)}) "
+            f"— infra-wide noise, no penalty."
         )
     nits = _count(pattern, "nit")
     sugg = _count(pattern, "suggestion")
@@ -419,6 +719,14 @@ def _format_failing_line(triage: TriageReport) -> str:
     if all_failing:
         parts.append(
             f"⚠️ {_plural(len(all_failing), 'check')} failing: {_join(all_failing)}"
+        )
+    # Policy/meta gets its own segment so a contributor sees the ask
+    # (rebase / sign CLA) without the score-docking warning glyph.
+    # Different separator glyph (ℹ️) signals zero-penalty / informational.
+    if triage.policy_meta_failures:
+        parts.append(
+            f"ℹ️ {_plural(len(triage.policy_meta_failures), 'policy check')} "
+            f"failing: {_join(triage.policy_meta_failures)}"
         )
     return " · ".join(parts)
 
@@ -498,6 +806,12 @@ def render_drilldown(triage: TriageReport, pattern: PatternReport) -> str:
         lines.append("\n_Unrelated failures_")
         for c in triage.unrelated_failures:
             lines.append(f"  • {c}")
+    if triage.policy_meta_failures:
+        lines.append("\n_Policy / meta failures (zero-penalty)_")
+        for c in triage.policy_meta_failures:
+            lines.append(
+                f"  • {c} — operates on PR shape, not code; fix per repo policy"
+            )
     if triage.running_checks:
         lines.append("\n_Still running_")
         for c in triage.running_checks:
@@ -505,9 +819,13 @@ def render_drilldown(triage: TriageReport, pattern: PatternReport) -> str:
 
     if pattern.findings:
         lines.append("\n_Pattern findings_")
-        for f in pattern.findings:
+        # Sort high-risk first so the reviewer's eye lands on the dangerous
+        # findings before the naming nits, regardless of severity ordering.
+        risk_order = {"high": 0, "medium": 1, "low": 2}
+        for f in sorted(pattern.findings, key=lambda x: risk_order.get(x.risk, 3)):
+            risk_tag = f" risk={f.risk}" if f.risk != "low" else ""
             lines.append(
-                f"  • [{f.severity}] `{f.file}` — {f.rationale} "
+                f"  • [{f.severity}{risk_tag}] `{f.file}` — {f.rationale} "
                 f"(source: {f.source}, {f.citation})"
             )
     if pattern.tech_debt:
@@ -654,9 +972,16 @@ async def _memory_context() -> str:
     return "User context (stable prefs/defaults; honor when relevant):\n" f"{doc}\n\n"
 
 
-agent = Agent(model, system_prompt=SYSTEM_PROMPT, output_type=TriageReport)
+# retries=3: Pydantic AI default is 1, which gave up on PR #26415 of
+# BerriAI/litellm with "Exceeded maximum retries (1) for output validation".
+# Triage/pattern outputs have hard length caps (max_length=200/600) the
+# model occasionally overruns on multi-file diffs; an extra 1-2 retries lets
+# it self-correct with the validator's error message instead of producing
+# a fallback card. Cost upper bound: 2 extra LLM calls per failed PR, only
+# on the unhappy path. Worth the spend.
+agent = Agent(model, system_prompt=SYSTEM_PROMPT, output_type=TriageReport, retries=3)
 pattern_agent = Agent(
-    model, system_prompt=PATTERN_SYSTEM_PROMPT, output_type=PatternReport
+    model, system_prompt=PATTERN_SYSTEM_PROMPT, output_type=PatternReport, retries=3
 )
 
 
@@ -710,6 +1035,63 @@ def gather_pattern_data(pr_ref: str) -> dict:
     return _run_gather_script(PATTERN_GATHER_SCRIPT, pr_ref)
 
 
+def _last_gather_payload(messages: list, tool_name: str) -> dict | None:
+    """Return the payload from the most recent successful call to `tool_name`
+    in `messages`, or None if none was called.
+
+    Pydantic AI sometimes hands tool returns back as the raw dict, sometimes
+    as a JSON string (depends on serialization path); accept both. Iterates
+    forward and keeps the last hit so retries pick up the freshest data.
+    """
+    last: dict | None = None
+    for msg in messages:
+        for part in getattr(msg, "parts", []):
+            if (
+                isinstance(part, ToolReturnPart)
+                and part.tool_name == tool_name
+            ):
+                payload = part.content
+                if isinstance(payload, dict):
+                    last = payload
+                elif isinstance(payload, str):
+                    try:
+                        parsed = json.loads(payload)
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(parsed, dict):
+                        last = parsed
+    return last
+
+
+def _overlay_diff_size(report: TriageReport, gather: dict | None) -> TriageReport:
+    """Recompute files_changed / additions / deletions from the gather output
+    and overlay them onto `report`, replacing whatever the model emitted.
+
+    Why post-process instead of asking the model: every sum is a chance for
+    the model to miscount on a 40-file PR, and the agent burns reasoning
+    tokens on arithmetic Python can do for free. The override prompt now
+    tells the model to leave these at 0 and trust this fixup. If the gather
+    payload is missing or shaped unexpectedly we leave the model's values
+    in place (defaults to 0), which preserves the fallback-card behavior
+    `_format_size_line` already handles.
+    """
+    if not gather:
+        return report
+    files = gather.get("diff_files")
+    if not isinstance(files, list):
+        return report
+    files_changed = len(files)
+    additions = sum(int(f.get("additions") or 0) for f in files if isinstance(f, dict))
+    deletions = sum(int(f.get("deletions") or 0) for f in files if isinstance(f, dict))
+    return report.model_copy(
+        update={
+            "files_changed": files_changed,
+            "additions": additions,
+            "deletions": deletions,
+        }
+    )
+
+
 async def _run_triage(
     prompt: str,
     history: list | None = None,
@@ -726,7 +1108,13 @@ async def _run_triage(
     except Exception as e:
         log.exception("triage_agent_failed prompt_head=%s", prompt[:80])
         return (None, history or [], str(e))
-    return (result.output, list(result.all_messages()), None)
+    messages = list(result.all_messages())
+    # Diff sizes are computed from the gather payload deterministically
+    # rather than trusted from the model — see _overlay_diff_size.
+    report = _overlay_diff_size(
+        result.output, _last_gather_payload(messages, "gather_pr_data")
+    )
+    return (report, messages, None)
 
 
 async def _run_pattern(
@@ -922,6 +1310,8 @@ _FIELD_NOTES: dict[str, str] = {
     "deletions": "total deleted lines across the diff",
     "pr_related_failures": "list of failing check names classified as caused by this PR",
     "unrelated_failures": "list of failing check names classified as infra/unrelated",
+    "unrelated_failures_also_failing_elsewhere": "subset of unrelated_failures whose same check is also failing on at least one of the sampled other_prs (broken-for-everyone infra; rubric does NOT dock these)",
+    "policy_meta_failures": "policy/meta checks (Verify PR source branch, DCO, cla-bot) failing on this PR; zero-penalty bucket, surfaced for contributor awareness only",
     "running_checks": "list of check names still in progress",
     "greptile_score": "Greptile bot's confidence score 1-5, or null if Greptile hasn't reviewed",
     "has_circleci_checks": "true iff any CircleCI check ran on this PR",
@@ -931,7 +1321,8 @@ _FIELD_NOTES: dict[str, str] = {
     "tech_debt": "ambient tech-debt items spotted (FYI, never blocks)",
     # PatternFinding
     "file": "path of the file the finding is about",
-    "severity": "blocker / suggestion / nit",
+    "severity": "blocker / suggestion / nit (evidence strength)",
+    "risk": "high / medium / low (impact if true; orthogonal to severity)",
     "source": "docs (cited from repo docs) or code (cited from sibling files)",
     "citation": "doc path or code path the finding is grounded in",
     "rationale": "≤200-char prose explaining the finding",

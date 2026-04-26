@@ -1,0 +1,74 @@
+{
+  "_about": "Second 20-PR eval set for the litellm-bot PR-review agent. Mix of provider fixes, integrations, docs-only, deps-shaped diffs, and CI-failure shapes (lint, code-quality, CodeQL, GitGuardian, branch-meta). Each entry carries a `human_label` (ready/not_ready/null) plus a short `human_notes` capturing what the manual grader saw at sample time. Edit notes when adding new entries.",
+  "repo": "BerriAI/litellm",
+  "_label_legend": {
+    "ready": "Human grader judged the PR ready for review (would map to agent verdict READY).",
+    "not_ready": "Human grader judged the PR NOT ready for review (would map to agent verdict BLOCKED, or WAITING when the only blocker is in-progress checks).",
+    "null": "Not yet graded by a human — agent verdict shown but no agree/disagree contribution to the matrix."
+  },
+  "prs": [
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26453",
+      "category": "cache_fix",
+      "notes": "Fix qdrant semantic cache. Greptile 5/5. All 44 checks green. No proof.",
+      "human_label": "ready",
+      "human_notes": "Greptile 5/5, small targeted fix, well-explained problem, low Veria warning."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26448",
+      "category": "guardrail_fix",
+      "notes": "fix(content_filter): log guardrail_information on streaming. Greptile 5/5. All 71 checks green.",
+      "human_label": "ready",
+      "human_notes": "Passing all testing, Greptile 5/5, low Veria. Would urge author to share a screenshot/proof of fix — that is missing."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26401",
+      "category": "proxy_logging_fix",
+      "notes": "fix(proxy): set verbose_logger level when LITELLM_LOG=INFO. Greptile 5/5. Only failing check is meta (Verify PR source branch). Note: duplicate of #26429.",
+      "human_label": "ready",
+      "human_notes": "Greptile 5/5, small targeted fix, no Veria warning. Meta check failing isn't a cause for concern (whitelist this CI check as unrelated)."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26445",
+      "category": "provider_fix",
+      "notes": "fix(anthropic): drop temperature from reasoning params. Greptile 4/5. Failing: CodeQL, All Other Providers, branch-meta.",
+      "human_label": "not_ready",
+      "human_notes": "Failing tests which may be related to this change."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26076",
+      "category": "provider_feature",
+      "notes": "feat(vertex_ai): Model Garden OpenAPI for publisher model ids. Greptile 4/5. All 72 checks green. Proof attached.",
+      "human_label": "not_ready",
+      "human_notes": "The heuristic concerns raised by Greptile are real. There are serious code quality issues in this PR."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/23499",
+      "category": "stale_large_pr",
+      "notes": "Large stale PR. 77 file changes, multiple merge conflicts.",
+      "human_label": "not_ready",
+      "human_notes": "77 file changes — too large. Too many merge conflicts. Clearly a stale PR and needs to be redone."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26074",
+      "category": "wrong_approach_fix",
+      "notes": "Fix sets error_msg to None to suppress an error. Issue is real but the chosen approach masks the failure surface.",
+      "human_label": "not_ready",
+      "human_notes": "The approach is wrong. The issue is real, but the fix to make error_msg None would mean users can no longer understand why their request failed. Fails the principle of fixing bugs at the source, not at the sink."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26284",
+      "category": "brittle_wide_fix",
+      "notes": "Lint url encodings. Touches 66 files applying an encoding helper inline at every callsite.",
+      "human_label": "not_ready",
+      "human_notes": "Approach is brittle and prone to failure. Changes 66 files which is too much. Encoding of a particular var inline across all these files means that in 3 months, if someone adds a new file with a similar URL/encoding and forgets the helper, we're back to square one."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26294",
+      "category": "dangerous_feature_flag",
+      "notes": "Deletes a set of imports and hides them behind a feature flag.",
+      "human_label": "not_ready",
+      "human_notes": "Dangerous PR. Deletes a bunch of imports and hides them behind a feature flag, but for existing proxy users this would mean those routes now just fail. Extremely dangerous — would lead to production down."
+    }
+  ]
+}
