@@ -1,0 +1,260 @@
+{
+  "owner": "BerriAI",
+  "repo": "litellm",
+  "pr_number": 26460,
+  "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+  "pr_author": "milan-berri",
+  "head_sha": "22439a119e601c25cbe54dc78970015c6a839fba",
+  "passing_checks": [
+    "ci/circleci: agent_testing",
+    "ci/circleci: search_testing",
+    "ci/circleci: llm_responses_api_testing",
+    "ci/circleci: auth_ui_unit_tests",
+    "ci/circleci: build_docker_database_image",
+    "ci/circleci: ui_build",
+    "ci/circleci: pass_through_unit_testing",
+    "ci/circleci: using_litellm_on_windows",
+    "ci/circleci: proxy_build_from_pip_tests",
+    "ci/circleci: guardrails_testing",
+    "ci/circleci: realtime_translation_testing",
+    "ci/circleci: litellm_assistants_api_testing",
+    "ci/circleci: redis_caching_unit_tests",
+    "ci/circleci: ocr_testing",
+    "ci/circleci: installing_litellm_on_python_v2_migration_resolver",
+    "ci/circleci: langfuse_logging_unit_tests",
+    "ci/circleci: audio_testing",
+    "ci/circleci: litellm_router_unit_testing",
+    "ci/circleci: google_generate_content_endpoint_testing",
+    "ci/circleci: installing_litellm_on_python",
+    "ci/circleci: litellm_mapped_enterprise_tests",
+    "ci/circleci: litellm_router_testing",
+    "ci/circleci: installing_litellm_on_python_3_13",
+    "ci/circleci: local_testing_part2",
+    "ci/circleci: litellm_utils_testing",
+    "ci/circleci: image_gen_testing",
+    "ci/circleci: batches_testing",
+    "ci/circleci: logging_testing",
+    "ci/circleci: test_bad_database_url",
+    "ci/circleci: db_migration_disable_update_check",
+    "ci/circleci: proxy_e2e_anthropic_messages_tests",
+    "ci/circleci: helm_chart_testing",
+    "ci/circleci: proxy_multi_instance_tests",
+    "ci/circleci: proxy_store_model_in_db_tests",
+    "ci/circleci: proxy_spend_accuracy_tests",
+    "ci/circleci: e2e_openai_endpoints",
+    "ci/circleci: e2e_ui_testing",
+    "ci/circleci: ui_unit_tests",
+    "ci/circleci: proxy_pass_through_endpoint_tests",
+    "ci/circleci: build_and_test",
+    "ci/circleci: proxy_logging_guardrails_model_info_tests",
+    "ci/circleci: llm_translation_testing",
+    "db-and-spend / Upload coverage to Codecov",
+    "proxy-utils / Upload coverage to Codecov",
+    "budgets / Upload coverage to Codecov",
+    "guardrails-hooks / Upload coverage to Codecov",
+    "proxy-runtime / Upload coverage to Codecov",
+    "auth-checks / Upload coverage to Codecov",
+    "logging-misc / Upload coverage to Codecov",
+    "jwt-and-keys / Upload coverage to Codecov",
+    "endpoints-and-responses / Upload coverage to Codecov",
+    "schema-migration / Upload coverage to Codecov",
+    "proxy-server-core / Upload coverage to Codecov",
+    "custom-logging / Upload coverage to Codecov",
+    "proxy-infra / Upload coverage to Codecov",
+    "proxy-endpoints / Upload coverage to Codecov",
+    "misc / Upload coverage to Codecov",
+    "All Other Providers / Upload coverage to Codecov",
+    "security / Upload coverage to Codecov",
+    "key-generation / Upload coverage to Codecov",
+    "enterprise-routing / Upload coverage to Codecov",
+    "integrations / Upload coverage to Codecov",
+    "proxy-auth / Upload coverage to Codecov",
+    "responses-caching-types / Upload coverage to Codecov",
+    "core-utils / Upload coverage to Codecov",
+    "Vertex AI / Upload coverage to Codecov",
+    "schema-migration / Run tests",
+    "proxy-runtime / Run tests",
+    "db-and-spend / Run tests",
+    "proxy-server-core / Run tests",
+    "proxy-utils / Run tests",
+    "auth-checks / Run tests",
+    "logging-misc / Run tests",
+    "budgets / Run tests",
+    "guardrails-hooks / Run tests",
+    "jwt-and-keys / Run tests",
+    "endpoints-and-responses / Run tests",
+    "key-generation / Run tests",
+    "custom-logging / Run tests",
+    "Greptile Review",
+    "proxy-endpoints / Run tests",
+    "proxy-infra / Run tests",
+    "proxy-auth / Run tests",
+    "responses-caching-types / Run tests",
+    "core-utils / Run tests",
+    "misc / Run tests",
+    "integrations / Run tests",
+    "proxy-user-auth-and-spend",
+    "proxy-token-counter",
+    "proxy-server",
+    "proxy-config",
+    "auth-and-jwt",
+    "proxy-utils",
+    "proxy-response-and-misc",
+    "key-generation",
+    "proxy-server-extras",
+    "enterprise-routing / Run tests",
+    "All Other Providers / Run tests",
+    "Vertex AI / Run tests",
+    "semgrep",
+    "test",
+    "lint",
+    "secret-scan",
+    "test-server-root-path (/api/v1)",
+    "Veria AI - PR Review",
+    "test-server-root-path (/llmproxy)",
+    "validate-model-prices-json",
+    "build-ui",
+    "unit-test",
+    "GitGuardian Security Checks",
+    "security / Run tests",
+    "assert-shard-coverage"
+  ],
+  "in_progress_checks": [],
+  "failing_check_contexts": [
+    {
+      "check_name": "ci/circleci: local_testing_part1",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\ncall     tests/local_testing/test_amazing_vertex_completion.py::test_vertex_ai_gemini_2_5_pro_streaming\r\n10.06s call     tests/local_testing/test_amazing_vertex_completion.py::test_completion_function_plus_pdf[False]\r\n7.26s call     tests/local_testing/test_function_calling.py::test_aaparallel_function_call_with_anthropic_thinking[anthropic/claude-4-sonnet-20250514]\r\n6.62s call     tests/local_testing/test_amazing_vertex_completion.py::test_anthropic_message_via_anthropic_messages\r\n6.35s call     tests/local_testing/test_function_calling.py::test_aaparallel_function_call[mistral/mistral-large-latest]\r\n6.02s call     tests/local_testing/test_amazing_vertex_completion.py::test_gemini_grounding_on_streaming\r\n5.92s call     tests/local_testing/test_amazing_vertex_completion.py::test_gemini_pro_httpx_custom_api_base[claude-3-5-sonnet@20240620]\r\n5.45s call     tests/local_testing/test_amazing_vertex_completion.py::test_async_vertexai_response_basic\r\n5.39s call     tests/local_testing/test_function_calling.py::test_parallel_function_call_anthropic_error_msg[messages1-False-anthropic.claude-3-sonnet-20240229-v1:0-bedrock]\r\n5.38s call     tests/local_testing/test_function_calling.py::test_passing_tool_result_as_list[bedrock/anthropic.claude-3-sonnet-20240229-v1:0]\r\n4.77s call     tests/local_testing/test_function_calling.py::test_aaparallel_function_call_with_anthropic_thinking[bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0]\r\n4.45s call     tests/local_testing/test_custom_callback_input.py::test_async_chat_azure_stream\r\n4.25s call     tests/local_testing/test_custom_callback_input.py::test_amazing_sync_embedding\r\n3.78s call     tests/local_testing/test_custom_callback_input.py::test_chat_azure_stream\r\n3.60s call     tests/local_testing/test_custom_callback_input.py::test_async_text_completion_openai_stream\r\n3.52s call     tests/local_testing/test_custom_callback_input.py::test_async_chat_openai_stream\r\n=========================== short test summary info ============================\r\nFAILED tests/local_testing/test_amazing_vertex_completion.py::test_gemini_tool_calling_working_demo - litellm.exceptions.BadRequestError: litellm.BadRequestError: Vertex_aiException BadRequestError - {\r\n  \"error\": {\r\n    \"code\": 400,\r\n    \"message\": \"* GenerateContentRequest.tools[0].function_declarations[0].parameters.properties[config].properties[callbacks].any_of[0].items: missing field.\\n\",\r\n    \"status\": \"INVALID_ARGUMENT\"\r\n  }\r\n}\r\nFAILED tests/local_testing/test_amazing_vertex_completion.py::test_gemini_nullable_object_tool_schema_httpx\r\nFAILED tests/local_testing/test_amazing_vertex_completion.py::test_vertex_schema_test\r\n===== 3 failed, 218 passed, 35 skipped, 295 warnings in 430.90s (0:07:10) ======\r\nDEBU[2026-04-25T00:18:43Z] A non-zero exit code was returned. This is expected if there are test failures. \r\nDEBU[2026-04-25T00:18:43Z] ending execution                             \r\nError: exit status 123\r\nError: exit status 123\r\n\n\r\nExited with code exit status 1\r\n",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1560621",
+      "other_prs": [
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26491,
+          "pr_title": "[WIP] feat(tests): Claude Code Compatibility Matrix v0 (PRD #26476)",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "documentation",
+      "conclusion": "failure",
+      "summary": null,
+      "failure_excerpt": "--- GitHub Actions raw log tail ---\n...[truncated]\ntellm/litellm/docs/my-website\n2026-04-25T00:02:42.5161108Z [command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n2026-04-25T00:02:42.5194211Z [command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n2026-04-25T00:02:42.5419980Z [command]/usr/bin/git config --local --name-only --get-regexp http\\.https\\:\\/\\/github\\.com\\/\\.extraheader\n2026-04-25T00:02:42.5451825Z [command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.https\\:\\/\\/github\\.com\\/\\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\"\n2026-04-25T00:02:42.5815153Z Post job cleanup.\n2026-04-25T00:02:42.6853244Z [command]/usr/bin/git version\n2026-04-25T00:02:42.6896288Z git version 2.53.0\n2026-04-25T00:02:42.6942405Z Temporarily overriding HOME='/home/runner/work/_temp/bbc7c8f1-e278-4ac1-b406-7369acab2dd6' before making global git config changes\n2026-04-25T00:02:42.6944153Z Adding repository directory to the temporary git global config as a safe directory\n2026-04-25T00:02:42.6954398Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/litellm/litellm\n2026-04-25T00:02:42.6986748Z [command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n2026-04-25T00:02:42.7021233Z [command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n2026-04-25T00:02:42.7265779Z [command]/usr/bin/git config --local --name-only --get-regexp http\\.https\\:\\/\\/github\\.com\\/\\.extraheader\n2026-04-25T00:02:42.7299615Z [command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.https\\:\\/\\/github\\.com\\/\\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\"\n2026-04-25T00:02:42.7644065Z Cleaning up orphan processes\n2026-04-25T00:02:42.7906704Z ##[warning]Node.js 20 actions are deprecated. The following actions are running on Node.js 20 and may not work as expected: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830, actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955, actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065. Actions will be forced to run with Node.js 24 by default starting June 2nd, 2026. Node.js 20 will be removed from the runner on September 16th, 2026. Please check if updated versions of these actions are available that support Node.js 24. To opt into Node.js 24 now, set the FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true environment variable on the runner or in your workflow file. Once Node.js 24 becomes the default, you can temporarily opt out by setting ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\n",
+      "annotations": [
+        ".github:2: Node.js 20 actions are deprecated. The following actions are running on Node.js 20 and may not work as expected: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830, actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955, actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        ".github:1748: Process completed with exit code 1."
+      ],
+      "html_url": "https://github.com/BerriAI/litellm/actions/runs/24917368112/job/72971947931",
+      "other_prs": [
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26491,
+          "pr_title": "[WIP] feat(tests): Claude Code Compatibility Matrix v0 (PRD #26476)",
+          "found": true,
+          "conclusion": "success"
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "code-quality",
+      "conclusion": "failure",
+      "summary": null,
+      "failure_excerpt": "--- GitHub Actions raw log tail ---\n...[truncated]\ntellm/litellm/docs/my-website\n2026-04-25T00:03:10.6693425Z [command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n2026-04-25T00:03:10.6730658Z [command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n2026-04-25T00:03:10.6956117Z [command]/usr/bin/git config --local --name-only --get-regexp http\\.https\\:\\/\\/github\\.com\\/\\.extraheader\n2026-04-25T00:03:10.6993799Z [command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.https\\:\\/\\/github\\.com\\/\\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\"\n2026-04-25T00:03:10.7317388Z Post job cleanup.\n2026-04-25T00:03:10.8248906Z [command]/usr/bin/git version\n2026-04-25T00:03:10.8298345Z git version 2.53.0\n2026-04-25T00:03:10.8356795Z Temporarily overriding HOME='/home/runner/work/_temp/6ab725a6-de5f-4e71-bfce-945ba36a0016' before making global git config changes\n2026-04-25T00:03:10.8357824Z Adding repository directory to the temporary git global config as a safe directory\n2026-04-25T00:03:10.8365747Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/litellm/litellm\n2026-04-25T00:03:10.8409932Z [command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n2026-04-25T00:03:10.8449246Z [command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n2026-04-25T00:03:10.8663521Z [command]/usr/bin/git config --local --name-only --get-regexp http\\.https\\:\\/\\/github\\.com\\/\\.extraheader\n2026-04-25T00:03:10.8700719Z [command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.https\\:\\/\\/github\\.com\\/\\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\"\n2026-04-25T00:03:10.9012482Z Cleaning up orphan processes\n2026-04-25T00:03:10.9241017Z ##[warning]Node.js 20 actions are deprecated. The following actions are running on Node.js 20 and may not work as expected: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830, actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955, actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065. Actions will be forced to run with Node.js 24 by default starting June 2nd, 2026. Node.js 20 will be removed from the runner on September 16th, 2026. Please check if updated versions of these actions are available that support Node.js 24. To opt into Node.js 24 now, set the FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true environment variable on the runner or in your workflow file. Once Node.js 24 becomes the default, you can temporarily opt out by setting ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\n",
+      "annotations": [
+        ".github:2: Node.js 20 actions are deprecated. The following actions are running on Node.js 20 and may not work as expected: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830, actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955, actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        ".github:1745: Process completed with exit code 1."
+      ],
+      "html_url": "https://github.com/BerriAI/litellm/actions/runs/24917368091/job/72971947901",
+      "other_prs": [
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": true,
+          "conclusion": "failure"
+        },
+        {
+          "pr_number": 26491,
+          "pr_title": "[WIP] feat(tests): Claude Code Compatibility Matrix v0 (PRD #26476)",
+          "found": true,
+          "conclusion": "success"
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": true
+    }
+  ],
+  "diff_files": [
+    {
+      "filename": "litellm/constants.py",
+      "status": "modified",
+      "additions": 10,
+      "deletions": 0,
+      "patch": "@@ -1396,6 +1396,15 @@\n     os.getenv(\"LITELLM_KEY_ROTATION_LOCK_TTL_SECONDS\", 600)\n )  # 10 minutes default \u2014 caps the deadlock window if a pod crashes mid-rotation\n UI_SESSION_TOKEN_TEAM_ID = \"litellm-dashboard\"\n+LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_ENABLED = os.getenv(\n+    \"LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_ENABLED\", \"false\"\n+)\n+LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_INTERVAL_SECONDS = int(\n+    os.getenv(\"LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_INTERVAL_SECONDS\", 86400)\n+)  # 24 hours default\n+LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_BATCH_SIZE = int(\n+    os.getenv(\"LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_BATCH_SIZE\", 1000)\n+)\n LITELLM_PROXY_ADMIN_NAME = \"default_user_id\"\n \n ########################### CLI SSO AUTHENTICATION CONSTANTS ###########################\n@@ -1425,6 +1434,7 @@\n )\n SPEND_LOG_CLEANUP_JOB_NAME = \"spend_log_cleanup\"\n KEY_ROTATION_JOB_NAME = \"litellm_key_rotation_job\"\n+EXPIRED_UI_SESSION_KEY_CLEANUP_JOB_NAME = \"litellm_expired_ui_session_key_cleanup_job\"\n SPEND_LOG_RUN_LOOPS = int(os.getenv(\"SPEND_LOG_RUN_LOOPS\", 500))\n SPEND_LOG_CLEANUP_BATCH_SIZE = int(os.getenv(\"SPEND_LOG_CLEANUP_BATCH_SIZE\", 1000))\n SPEND_LOG_QUEUE_SIZE_THRESHOLD = int(os.getenv(\"SPEND_LOG_QUEUE_SIZE_THRESHOLD\", 100))"
+    },
+    {
+      "filename": "litellm/proxy/common_utils/expired_ui_session_key_cleanup_manager.py",
+      "status": "added",
+      "additions": 156,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,156 @@\n+\"\"\"\n+Expired UI session key cleanup manager.\n+\n+Deletes expired virtual keys created for LiteLLM dashboard sessions.\n+\"\"\"\n+\n+from datetime import datetime, timezone\n+from typing import Any, Dict, List, Optional\n+\n+from litellm._logging import verbose_proxy_logger\n+from litellm.caching import DualCache\n+from litellm.constants import (\n+    EXPIRED_UI_SESSION_KEY_CLEANUP_JOB_NAME,\n+    LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_BATCH_SIZE,\n+    LITELLM_INTERNAL_JOBS_SERVICE_ACCOUNT_NAME,\n+    UI_SESSION_TOKEN_TEAM_ID,\n+)\n+from litellm.proxy._types import KeyRequest, LiteLLM_VerificationToken, UserAPIKeyAuth\n+from litellm.proxy.hooks.key_management_event_hooks import KeyManagementEventHooks\n+from litellm.proxy.management_endpoints.key_management_endpoints import (\n+    delete_verification_tokens,\n+)\n+from litellm.proxy.utils import PrismaClient\n+\n+\n+class ExpiredUISessionKeyCleanupManager:\n+    \"\"\"\n+    Cleans up expired UI session keys.\n+    \"\"\"\n+\n+    def __init__(\n+        self,\n+        prisma_client: PrismaClient,\n+        user_api_key_cache: DualCache,\n+        pod_lock_manager=None,\n+    ):\n+        self.prisma_client = prisma_client\n+        self.user_api_key_cache = user_api_key_cache\n+        self.pod_lock_manager = pod_lock_manager\n+\n+    async def cleanup_expired_keys(self) -> int:\n+        \"\"\"\n+        Main entry point for deleting expired UI session keys.\n+        Uses PodLockManager to ensure only one pod runs cleanup in multi-pod deployments.\n+        \"\"\"\n+        lock_acquired = False\n+        try:\n+            if self.pod_lock_manager and self.pod_lock_manager.redis_cache:\n+                lock_acquired = (\n+                    await self.pod_lock_manager.acquire_lock(\n+                        cronjob_id=EXPIRED_UI_SESSION_KEY_CLEANUP_JOB_NAME,\n+                    )\n+                    or False\n+                )\n+                if not lock_acquired:\n+                    verbose_proxy_logger.debug(\n+                        \"Expired U\n...[truncated]"
+    },
+    {
+      "filename": "litellm/proxy/proxy_server.py",
+      "status": "modified",
+      "additions": 81,
+      "deletions": 2,
+      "patch": "@@ -6737,6 +6737,10 @@ async def _initialize_spend_tracking_background_jobs(\n         Args:\n             scheduler: The scheduler to add the background jobs to\n         \"\"\"\n+        global prisma_client\n+        global proxy_logging_obj\n+        global user_api_key_cache\n+\n         ########################################################\n         # CloudZero Background Job\n         ########################################################\n@@ -6810,8 +6814,6 @@ async def _initialize_spend_tracking_background_jobs(\n                 )\n \n                 # Get prisma_client and proxy_logging_obj from global scope\n-                global prisma_client\n-                global proxy_logging_obj\n                 if prisma_client is not None:\n                     # Reuse the PodLockManager from db_spend_update_writer\n                     pod_lock_manager = (\n@@ -6841,6 +6843,83 @@ async def _initialize_spend_tracking_background_jobs(\n                 \"Key rotation disabled (set LITELLM_KEY_ROTATION_ENABLED=true to enable)\"\n             )\n \n+        await cls._initialize_expired_ui_session_key_cleanup_background_job(\n+            scheduler=scheduler\n+        )\n+\n+    @classmethod\n+    async def _initialize_expired_ui_session_key_cleanup_background_job(\n+        cls, scheduler: AsyncIOScheduler\n+    ):\n+        \"\"\"\n+        Initialize the expired UI session key cleanup background job.\n+        \"\"\"\n+        global prisma_client\n+        global proxy_logging_obj\n+        global user_api_key_cache\n+\n+        ########################################################\n+        # Expired UI Session Key Cleanup Background Job\n+        ########################################################\n+        from litellm.constants import (\n+            EXPIRED_UI_SESSION_KEY_CLEANUP_JOB_NAME,\n+            LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_ENABLED,\n+            LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_INTERVAL_SECONDS,\n+        )\n+\n+        expired_ui_session_key_cleanup_enabled: Optional[bool\n...[truncated]"
+    },
+    {
+      "filename": "tests/test_litellm/proxy/common_utils/test_expired_ui_session_key_cleanup_manager.py",
+      "status": "added",
+      "additions": 348,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,348 @@\n+\"\"\"\n+Test expired UI session key cleanup manager functionality.\n+\"\"\"\n+\n+import os\n+import sys\n+from datetime import datetime, timedelta, timezone\n+from unittest.mock import AsyncMock, MagicMock, patch\n+\n+import pytest\n+from fastapi import HTTPException, status\n+\n+sys.path.insert(0, os.path.abspath(\"../../../..\"))\n+\n+from litellm.constants import (\n+    EXPIRED_UI_SESSION_KEY_CLEANUP_JOB_NAME,\n+    LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_BATCH_SIZE,\n+    LITELLM_INTERNAL_JOBS_SERVICE_ACCOUNT_NAME,\n+    UI_SESSION_TOKEN_TEAM_ID,\n+)\n+from litellm.proxy._types import LiteLLM_VerificationToken\n+from litellm.proxy.common_utils.expired_ui_session_key_cleanup_manager import (\n+    ExpiredUISessionKeyCleanupManager,\n+)\n+\n+\n+class TestExpiredUISessionKeyCleanupManager:\n+    \"\"\"Test the ExpiredUISessionKeyCleanupManager class functionality.\"\"\"\n+\n+    @pytest.mark.asyncio\n+    async def test_find_expired_ui_session_keys_filters_dashboard_team_and_expiry(self):\n+        mock_prisma_client = AsyncMock()\n+        mock_cache = MagicMock()\n+        manager = ExpiredUISessionKeyCleanupManager(\n+            prisma_client=mock_prisma_client,\n+            user_api_key_cache=mock_cache,\n+        )\n+\n+        now = datetime(2026, 4, 25, 12, 0, 0, tzinfo=timezone.utc)\n+        mock_keys = [\n+            LiteLLM_VerificationToken(\n+                token=\"expired-dashboard-token\",\n+                team_id=UI_SESSION_TOKEN_TEAM_ID,\n+                expires=now - timedelta(seconds=1),\n+            )\n+        ]\n+        mock_prisma_client.db.litellm_verificationtoken.find_many.return_value = (\n+            mock_keys\n+        )\n+\n+        with patch(\n+            \"litellm.proxy.common_utils.expired_ui_session_key_cleanup_manager.datetime\"\n+        ) as mock_datetime:\n+            mock_datetime.now.return_value = now\n+            mock_datetime.side_effect = lambda *args, **kwargs: datetime(\n+                *args, **kwargs\n+            )\n+\n+            keys = await manager._find\n...[truncated]"
+    }
+  ],
+  "other_pr_numbers": [
+    26546,
+    26415,
+    26491
+  ],
+  "greptile_score": 5,
+  "has_circleci_checks": true,
+  "mergeable": true,
+  "mergeable_state": "blocked"
+}
