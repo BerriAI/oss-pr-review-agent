@@ -1,0 +1,60 @@
+{
+  "_about": "7-PR iteration set for tuning the pattern reviewer's risk rubric. Mix of: (a) 4 problem PRs from v2 — the cases the rubric was designed to catch (#26294, #26074) or correct (#26453, #26448); (b) 3 false-positive guards from v1 — small clean PRs that the latest blast-radius rubric started over-flagging (#26385, #26467, #26500). Stop condition for the iteration loop: all 7 human_label values match the agent verdict.",
+  "repo": "BerriAI/litellm",
+  "_label_legend": {
+    "ready": "Human grader judged the PR ready for review (would map to agent verdict READY).",
+    "not_ready": "Human grader judged the PR NOT ready for review (would map to agent verdict BLOCKED, or WAITING when the only blocker is in-progress checks).",
+    "null": "Not yet graded by a human — agent verdict shown but no agree/disagree contribution to the matrix."
+  },
+  "prs": [
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26453",
+      "category": "cache_fix",
+      "notes": "v2 problem PR: cache fix; previous rubric over-flagged json.dumps as high-risk. Holdout target = READY.",
+      "human_label": "ready",
+      "human_notes": "Greptile 5/5, small targeted fix, well-explained problem, low Veria warning."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26448",
+      "category": "guardrail_fix",
+      "notes": "v2 problem PR: content_filter logging fix; previous rubric over-flagged on truncated-patch hallucination. Holdout target = READY.",
+      "human_label": "ready",
+      "human_notes": "Passing all testing, Greptile 5/5, low Veria. Would urge author to share a screenshot/proof of fix — that is missing."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26294",
+      "category": "dangerous_feature_flag",
+      "notes": "v2 problem PR: gated route imports — the headline catch the rubric was designed for. Holdout target = BLOCKED.",
+      "human_label": "not_ready",
+      "human_notes": "Dangerous PR. Deletes a bunch of imports and hides them behind a feature flag, but for existing proxy users this would mean those routes now just fail. Extremely dangerous — would lead to production down."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26074",
+      "category": "wrong_approach_fix",
+      "notes": "v2 problem PR: error_msg = None masks failure surface. Holdout target = BLOCKED.",
+      "human_label": "not_ready",
+      "human_notes": "The approach is wrong. The issue is real, but the fix to make error_msg None would mean users can no longer understand why their request failed. Fails the principle of fixing bugs at the source, not at the sink."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26385",
+      "category": "merged_dedupe",
+      "notes": "False-positive guard from v1: trivial duplicate-constant removal. Anything not READY here = false-pos.",
+      "human_label": "ready",
+      "human_notes": "5/5 on Greptile, low Veria issues, all tests passing, code fix looks small and reasonable for the issue."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26467",
+      "category": "merged_security",
+      "notes": "False-positive guard from v1: pass-through URL hardening. Real change shape, well-explained. Holdout target = READY.",
+      "human_label": "ready",
+      "human_notes": "5/5 on Greptile, no Veria issues, all tests passing, some proof of it working, code looks reasonable. Issue + fix is well explained."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26500",
+      "category": "open_clean",
+      "notes": "False-positive guard from v1: baseline open-clean PR. Multi-file but conforming. Holdout target = READY.",
+      "human_label": "ready",
+      "human_notes": "Everything passing, code looks fine, but requires additional look. Might be bloated."
+    }
+  ]
+}

@@ -4,3 +4,5 @@ __pycache__/
 .env
 .pytest_cache/
 .DS_Store
+
+tests/eval/results/
