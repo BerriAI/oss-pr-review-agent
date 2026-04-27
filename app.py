@@ -1173,11 +1173,12 @@ CHAT_SYSTEM_PROMPT = (
 @dataclass
 class ChatDeps:
     """Per-call context for chat_agent. Populated at the call site (web /chat
-    or Slack), read by `_filter_chat_tools` to gate which tools the LLM sees
+    or Slack), read by tool-filter plugins to gate which tools the LLM sees
     on this turn. All fields optional so callers can fill what they have."""
 
     user_id: str | None = None
     workspace_id: str | None = None
+    channel_id: str | None = None
 
 
 async def _filter_chat_tools(
@@ -1186,16 +1187,14 @@ async def _filter_chat_tools(
 ) -> list[ToolDefinition]:
     """Tool filter step. Runs before every LLM call (including mid-loop steps),
     receives the full registered tool set, returns the subset the model is
-    allowed to see this turn. Drop a tool from the returned list to make it
-    invisible to the model — pydantic-ai does not pass it in the tools array."""
-    return [t for t in tools if _tool_allowed(ctx.deps, t)]
+    allowed to see this turn. Each registered plugin sees the prior plugin's
+    output, so deny rules compose: once a plugin drops a tool, later plugins
+    cannot bring it back."""
+    from plugins import TOOL_FILTER_PLUGINS
 
-
-def _tool_allowed(deps: ChatDeps, tool: ToolDefinition) -> bool:
-    """Per-tool gate. Add real validation here (allowlists, feature flags,
-    workspace/user policy, etc.). Default permits everything so behavior is
-    unchanged until real rules are wired in."""
-    return True
+    for plugin in TOOL_FILTER_PLUGINS:
+        tools = await plugin.filter(ctx.deps, tools)
+    return tools
 
 
 chat_agent = Agent(
