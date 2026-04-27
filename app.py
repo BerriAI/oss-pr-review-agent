@@ -7,6 +7,7 @@ import secrets
 import subprocess
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -17,10 +18,11 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic_ai import Agent, ModelRetry
+from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
+from pydantic_ai.tools import ToolDefinition
 
 import slack_handler
 
@@ -1168,7 +1170,41 @@ CHAT_SYSTEM_PROMPT = (
     "If the user's request doesn't fit either skill, just answer normally."
 )
 
-chat_agent = Agent(model, system_prompt=CHAT_SYSTEM_PROMPT, output_type=str)
+@dataclass
+class ChatDeps:
+    """Per-call context for chat_agent. Populated at the call site (web /chat
+    or Slack), read by `_filter_chat_tools` to gate which tools the LLM sees
+    on this turn. All fields optional so callers can fill what they have."""
+
+    user_id: str | None = None
+    workspace_id: str | None = None
+
+
+async def _filter_chat_tools(
+    ctx: RunContext[ChatDeps],
+    tools: list[ToolDefinition],
+) -> list[ToolDefinition]:
+    """Tool filter step. Runs before every LLM call (including mid-loop steps),
+    receives the full registered tool set, returns the subset the model is
+    allowed to see this turn. Drop a tool from the returned list to make it
+    invisible to the model — pydantic-ai does not pass it in the tools array."""
+    return [t for t in tools if _tool_allowed(ctx.deps, t)]
+
+
+def _tool_allowed(deps: ChatDeps, tool: ToolDefinition) -> bool:
+    """Per-tool gate. Add real validation here (allowlists, feature flags,
+    workspace/user policy, etc.). Default permits everything so behavior is
+    unchanged until real rules are wired in."""
+    return True
+
+
+chat_agent = Agent(
+    model,
+    system_prompt=CHAT_SYSTEM_PROMPT,
+    output_type=str,
+    deps_type=ChatDeps,
+    prepare_tools=_filter_chat_tools,
+)
 
 
 @chat_agent.system_prompt(dynamic=True)
@@ -1893,7 +1929,7 @@ async def delete_thread(thread_id: str) -> dict:
     response_model=ChatResponse,
     dependencies=[Depends(require_login)],
 )
-async def chat_api(req: ChatRequest) -> ChatResponse:
+async def chat_api(req: ChatRequest, request: Request) -> ChatResponse:
     if not req.message.strip():
         raise HTTPException(400, "message is empty")
 
@@ -1912,8 +1948,9 @@ async def chat_api(req: ChatRequest) -> ChatResponse:
         thread["title"] = req.title
 
     history = thread["history"]
+    deps = ChatDeps(user_id=request.session.get("user"))
     try:
-        result = await chat_agent.run(req.message, message_history=history)
+        result = await chat_agent.run(req.message, message_history=history, deps=deps)
         output = result.output
         new_msgs = list(result.all_messages())
     except Exception as e:
