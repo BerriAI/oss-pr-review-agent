@@ -28,7 +28,8 @@ dev = [
 # with `pytest -m eval` to run only eval, or `pytest -m "eval or not eval"`
 # to run both. The `--strict-markers` would be nice but we keep the float
 # loose so contributors can add ad-hoc markers without ceremony.
-addopts = "-m 'not eval'"
+addopts = "-m 'not eval and not triage_regression'"
 markers = [
     "eval: live end-to-end eval against the curated PR set (slow, costs LLM money, opt-in only). Run with `pytest -m eval`.",
+    "triage_regression: focused single-PR LLM tests that pin specific classifier regressions using fixture-injected gather payloads (~10s, ~$0.02 per test). Opt in with `pytest -m triage_regression`. Use these to lock in a specific bug fix without paying the full eval bill.",
 ]
