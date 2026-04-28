@@ -24,7 +24,7 @@ class CircleCIAccessPlugin:
         deps: ChatDeps,
         tools: list[ToolDefinition],
     ) -> list[ToolDefinition]:
-        print(f"deps: {deps}")
+        log.info(f"deps: {deps}")
         allowed_users = _csv_env("CIRCLECI_ALLOWED_USER_IDS")
         allowed_channels = _csv_env("CIRCLECI_ALLOWED_CHANNEL_IDS")
 
