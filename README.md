@@ -64,15 +64,13 @@ Key pieces:
 ## Run locally
 
 ```bash
-git clone --recursive <this-repo>
+git clone <this-repo>
 cp .env.example .env  # fill in values
 uv sync
 uv run uvicorn app:app --reload
 ```
 
 Expose your local port to Slack with `ngrok http 8000` (or `cloudflared tunnel --url http://localhost:8000`) and point your Slack app's **Event Subscriptions → Request URL** at `<tunnel-url>/slack/events`.
-
-If you cloned without `--recursive`: `git submodule update --init --recursive`.
 
 ## Test it without Slack
 
