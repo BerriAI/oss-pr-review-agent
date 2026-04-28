@@ -123,7 +123,6 @@ Run `fly launch` (Fly.io reads `Procfile`) or create a new Python service on Ren
 | `LITELLM_API_BASE` | no | LiteLLM proxy URL. Defaults to `http://0.0.0.0:4000` |
 | `LITELLM_MODEL` | no | Model alias the proxy routes. Defaults to `claude-sonnet-4-6` |
 | `GITHUB_TOKEN` | yes | PAT with `public_repo` — required by the skill |
-| `CIRCLECI_TOKEN` | no | Enables CircleCI log splicing in the review |
 | `PORT` | no | Defaults to 8000 |
 | `LOGFIRE_TOKEN` | no | Pydantic Logfire write token. When set, agent runs, HTTPX calls, FastAPI requests, and the gather subprocess are traced and shipped to Logfire. No-op without it. |
 
