@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.cache
+.claude
+.mypy_cache
+.pytest_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+**/*.pyc
+runs/scope_bench_*.json
+tests/eval/results
