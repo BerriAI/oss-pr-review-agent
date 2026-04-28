@@ -22,6 +22,7 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
 
+import karpathy_check
 import slack_handler
 
 load_dotenv()
@@ -582,6 +583,7 @@ def _compose_one_liner(
     penalties: list[str],
     triage: TriageReport,
     pattern: PatternReport,
+    karpathy: karpathy_check.KarpathyReview | None = None,
 ) -> str:
     if verdict == "WAITING":
         n = len(triage.running_checks)
@@ -605,6 +607,20 @@ def _compose_one_liner(
     high_risk_n = _count_risk(pattern, "high")
     if high_risk_n:
         return f"{_plural(high_risk_n, 'high-risk pattern finding')} need a closer look first."
+    # Karpathy dock surfaces above generic soft penalties because the
+    # senior-eng stage only runs on otherwise-clean PRs — when it fires it
+    # IS the headline reason the verdict flipped off READY.
+    if karpathy is not None:
+        gate = karpathy.merge_gate.safe_for_high_rps_gateway
+        if gate in ("no", "conditional"):
+            one_liner = (karpathy.merge_gate.one_liner or "").strip().rstrip(".")
+            if one_liner:
+                return f"{one_liner}."
+            return (
+                "Karpathy hold — staff-eng review flagged production risk."
+                if gate == "no"
+                else "Karpathy conditional — see merge gate for what's needed."
+            )
     # Only soft penalties left → name the top one verbatim.
     return penalties[0][:1].upper() + penalties[0][1:] + "."
 
@@ -731,11 +747,61 @@ def _format_failing_line(triage: TriageReport) -> str:
     return " · ".join(parts)
 
 
-def fuse(triage: TriageReport, pattern: PatternReport) -> TriageCard:
-    """Combine the two agent outputs into the single card the user sees.
+# Karpathy senior-eng check rubric. Lives outside _RUBRIC because:
+# (a) it only fires when a karpathy review actually ran (most callsites
+#     pass karpathy=None and get the prior behavior unchanged), and
+# (b) the weights here are calibrated against the merge_gate verdict,
+#     not triage/pattern signals — fixing one tier here doesn't perturb
+#     the existing rubric's weights.
+#
+# Weight choices:
+#   - "no" → 5 so a clean 5/5 PR drops to 0 → BLOCKED. The karpathy
+#     stage only runs when triage+pattern would otherwise emit READY,
+#     so the only way "no" can fire is on an otherwise-clean PR; we
+#     want the verdict to flip hard.
+#   - "conditional" → 2 so a clean 5/5 drops to 3 (still BLOCKED but
+#     not catastrophic, and the score difference between conditional-
+#     plus-clean and no-plus-clean is visible).
+_KARPATHY_GATE_WEIGHTS: dict[str, int] = {"no": 5, "conditional": 2}
 
-    Pure function. No I/O. Deterministic given (triage, pattern). Tested in
-    tests/test_fuse.py.
+
+def _karpathy_penalty(
+    karpathy: karpathy_check.KarpathyReview | None,
+) -> tuple[int, str | None]:
+    """(weight, label) for the karpathy merge_gate row, or (0, None) if no
+    dock. Pure function; tested in tests/test_fuse_karpathy.py.
+    """
+    if karpathy is None:
+        return 0, None
+    gate = karpathy.merge_gate.safe_for_high_rps_gateway
+    weight = _KARPATHY_GATE_WEIGHTS.get(gate, 0)
+    if weight == 0:
+        return 0, None
+    one_liner = (karpathy.merge_gate.one_liner or "").strip()
+    if one_liner:
+        # Trim trailing period so the rubric's "; " join doesn't double up.
+        one_liner = one_liner.rstrip(".")
+        label = f"karpathy {gate} — {one_liner}"
+    else:
+        label = f"karpathy {gate}"
+    return weight, label
+
+
+def fuse(
+    triage: TriageReport,
+    pattern: PatternReport,
+    karpathy: karpathy_check.KarpathyReview | None = None,
+) -> TriageCard:
+    """Combine the agent outputs into the single card the user sees.
+
+    Pure function. No I/O. Deterministic given (triage, pattern, karpathy).
+    Tested in tests/test_fuse.py + tests/test_fuse_karpathy.py.
+
+    `karpathy` is None whenever the karpathy stage didn't run — either
+    because the fused (triage+pattern) verdict was BLOCKED so the caller
+    short-circuited it, or because the stage failed open. Treating None
+    and KarpathyReview() identically (no penalty either way) keeps
+    back-compat with every callsite that doesn't pass karpathy.
     """
     score = 5
     penalties: list[str] = []
@@ -743,6 +809,15 @@ def fuse(triage: TriageReport, pattern: PatternReport) -> TriageCard:
         if predicate(triage, pattern):
             score -= weight
             penalties.append(label(triage, pattern))
+
+    # Karpathy dock applied after the rubric loop so it slots into the
+    # same penalties list that _compose_justification consumes verbatim.
+    k_weight, k_label = _karpathy_penalty(karpathy)
+    if k_weight:
+        score -= k_weight
+        if k_label:
+            penalties.append(k_label)
+
     score = max(score, 0)
 
     # WAITING wins over score-derived states because the score is provisional
@@ -761,7 +836,7 @@ def fuse(triage: TriageReport, pattern: PatternReport) -> TriageCard:
         score=score,
         verdict=verdict,
         emoji=emoji,
-        verdict_one_liner=_compose_one_liner(verdict, penalties, triage, pattern),
+        verdict_one_liner=_compose_one_liner(verdict, penalties, triage, pattern, karpathy),
         justification=_compose_justification(
             verdict, score, penalties, triage, pattern
         ),
@@ -786,11 +861,17 @@ def render_card(card: TriageCard) -> str:
     )
 
 
-def render_drilldown(triage: TriageReport, pattern: PatternReport) -> str:
+def render_drilldown(
+    triage: TriageReport,
+    pattern: PatternReport,
+    karpathy: karpathy_check.KarpathyReview | None = None,
+) -> str:
     """Slack mrkdwn for the threaded follow-up: full failure list + findings.
 
     Posted as a reply so it doesn't compete with the card visually but is one
-    click away for anyone who wants the detail.
+    click away for anyone who wants the detail. `karpathy` is None when the
+    senior-eng stage didn't run (the common case — most PRs are blocked by
+    triage+pattern before karpathy gets to weigh in).
     """
     lines: list[str] = ["*Drill-down*"]
 
@@ -832,6 +913,41 @@ def render_drilldown(triage: TriageReport, pattern: PatternReport) -> str:
         lines.append("\n_Tech debt (FYI, not blocking)_")
         for td in pattern.tech_debt:
             lines.append(f"  • `{td.code_path}` vs `{td.doc_path}` — {td.note}")
+
+    # Karpathy senior-eng review surfaces last in the drilldown because:
+    # (a) it only runs on otherwise-clean PRs, so when it's present it IS
+    #     the reason the verdict moved off READY,
+    # (b) the merge_gate verdict + one_liner are the headline already on
+    #     the card; the drilldown is for the supporting findings.
+    if karpathy is not None:
+        gate = karpathy.merge_gate.safe_for_high_rps_gateway
+        glyph = {"yes": "✅", "conditional": "⚠️", "no": "❌"}.get(gate, "?")
+        lines.append("\n_Karpathy senior-eng pre-merge review_")
+        one_liner = (karpathy.merge_gate.one_liner or "").strip()
+        head = f"  {glyph} merge_gate={gate}"
+        if one_liner:
+            head = f"{head} — {one_liner}"
+        lines.append(head)
+        for note in karpathy.merge_gate.unintended_consequences:
+            lines.append(f"  • risk: {note}")
+        for note in karpathy.merge_gate.hot_path_notes:
+            lines.append(f"  • hot path: {note}")
+        if karpathy.merge_gate.what_would_make_yes:
+            lines.append(
+                f"  • to unblock: {karpathy.merge_gate.what_would_make_yes}"
+            )
+        for f in karpathy.findings:
+            tag = f"[{f.breadth}]"
+            if f.regression_archetype:
+                tag = f"{tag} ({f.regression_archetype})"
+            bug = f.bug_class or "?"
+            lines.append(f"  • {tag} {bug}")
+            if f.fix_locus:
+                lines.append(f"      fix locus: {f.fix_locus}")
+            if f.sibling_loci:
+                lines.append(f"      siblings: {', '.join(f.sibling_loci)}")
+            if f.recommended_fix:
+                lines.append(f"      recommend: {f.recommended_fix}")
 
     if len(lines) == 1:
         lines.append("Nothing to drill into. Card has the full story.")
@@ -1708,9 +1824,35 @@ async def review_pr(pr_url: str, channel: str, thread_ts: str) -> None:
             log.warning("posted_fallback_card url=%s err=%s", pr_url, err)
             return
 
-        card = fuse(triage, pattern)
+        # Karpathy senior-eng pre-merge check is the gate's most expensive
+        # tool (a CC subprocess + worktree per call), so we only invoke it
+        # when triage+pattern would otherwise emit READY. The probe call
+        # to fuse() with karpathy=None tells us the would-be verdict
+        # without committing to the karpathy-aware card yet. fuse() is a
+        # pure function so calling it twice in this branch is fine.
+        provisional = fuse(triage, pattern)
+        karpathy_review: karpathy_check.KarpathyReview | None = None
+        if provisional.verdict == "READY":
+            try:
+                karpathy_review = await karpathy_check.run_karpathy_check(pr_url)
+            except Exception as e:  # noqa: BLE001 — fail-open on any error
+                # The module is supposed to swallow its own exceptions and
+                # return None, but defense-in-depth here ensures a karpathy
+                # bug never bricks the user-facing review.
+                log.exception("karpathy_check_unhandled url=%s err=%s", pr_url, e)
+                karpathy_review = None
+            span.set_attribute(
+                "review_pr.karpathy_ran", karpathy_review is not None
+            )
+            if karpathy_review is not None:
+                span.set_attribute(
+                    "review_pr.karpathy_gate",
+                    karpathy_review.merge_gate.safe_for_high_rps_gateway,
+                )
+
+        card = fuse(triage, pattern, karpathy_review)
         card_text = render_card(card)
-        drilldown = render_drilldown(triage, pattern)
+        drilldown = render_drilldown(triage, pattern, karpathy_review)
 
         # Observability: emit failure counts + verdict on the span so we can
         # query "PRs where the bot returned READY but failures > 0" in Logfire.
