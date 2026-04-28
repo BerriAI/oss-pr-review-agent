@@ -35,24 +35,16 @@ RUN apt-get update \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# ---- Claude Code CLI -------------------------------------------------------
-# Native installer drops the binary in /root/.local/bin. Putting that on PATH
-# globally so `shutil.which("claude")` in karpathy_check.py finds it whether
-# the process runs as root or under uvicorn's worker.
+# ---- Non-root user ---------------------------------------------------------
+# claude refuses `--permission-mode bypassPermissions` under uid 0 with
+# "--dangerously-skip-permissions cannot be used with root/sudo privileges".
+# karpathy_check.py hard-codes bypassPermissions in _invoke_claude(), so the
+# runtime MUST be non-root or every karpathy run fails with
+# `karpathy_failed err=no_json rc=1`.
 #
-# Headless auth: the karpathy CC subprocess is invoked with
-# `--permission-mode bypassPermissions`, which still requires valid credentials.
-# Two options at runtime, pick one:
-#   (a) Direct to Anthropic — set ANTHROPIC_API_KEY.
-#   (b) Through the LiteLLM proxy (reuses the same key the rest of the bot
-#       already uses) — set ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, e.g.
-#         ANTHROPIC_BASE_URL=$LITELLM_API_BASE
-#         ANTHROPIC_AUTH_TOKEN=$LITELLM_API_KEY
-#       Requires the proxy to expose /v1/messages (Anthropic Messages format).
-#       Set ANTHROPIC_MODEL if your proxy routes a non-default model name.
-# Without one of these, every karpathy run fails with `karpathy_failed err=no_json`.
-RUN curl -fsSL https://claude.ai/install.sh | bash
-ENV PATH="/root/.local/bin:${PATH}"
+# Create the bot user before installing claude so the installer's hard-coded
+# `$HOME/.local/bin` ends up under the same user that will eventually exec it.
+RUN useradd --create-home --shell /bin/bash --uid 1000 bot
 
 # ---- litellm clone ---------------------------------------------------------
 # karpathy_check._resolve_litellm_clone() falls back to /opt/litellm when
@@ -60,8 +52,24 @@ ENV PATH="/root/.local/bin:${PATH}"
 # vars are required. Full clone (not --depth 1) because karpathy adds
 # worktrees at arbitrary PR-head SHAs, which a shallow clone can't satisfy.
 # `git fetch origin pull/N/head` runs on each karpathy invocation so a clone
-# that's a few days stale at image-build time is still fine.
-RUN git clone https://github.com/BerriAI/litellm.git /opt/litellm
+# that's a few days stale at image-build time is still fine. Cloned as bot
+# so the per-call `git fetch` and `git worktree add` succeed without sudo.
+RUN install -d -o bot -g bot /opt/litellm \
+ && su bot -c "git clone https://github.com/BerriAI/litellm.git /opt/litellm"
+
+# ---- Claude Code CLI -------------------------------------------------------
+# Installed under bot's $HOME (not root's) so the binary lives at
+# /home/bot/.local/bin/claude — the path the runtime user can actually exec.
+# Headless auth options (set one as a Render env var):
+#   (a) ANTHROPIC_API_KEY (direct to Anthropic).
+#   (b) ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (LiteLLM proxy — reuses
+#       the existing LITELLM_API_KEY). Set ANTHROPIC_MODEL too if your
+#       proxy doesn't route the default claude-sonnet-* model name.
+USER bot
+ENV HOME=/home/bot
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/home/bot/.local/bin:${PATH}"
+USER root
 
 # ---- uv + Python deps ------------------------------------------------------
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -104,6 +112,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ENV PATH="/app/.venv/bin:${PATH}"
 
 # ---- Runtime ---------------------------------------------------------------
+# Drop to the bot user for CMD — see the claude-no-root note above the
+# Claude Code install. /app stays root-owned (bot only needs read; karpathy's
+# tempdirs go to /tmp) and /opt/litellm is bot-owned from the clone step so
+# `git fetch origin pull/N/head` works without sudo.
+USER bot
+
 # Render injects $PORT; default to 8000 for local `docker run`.
 ENV PORT=8000
 EXPOSE 8000
