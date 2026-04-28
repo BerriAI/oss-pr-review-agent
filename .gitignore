@@ -6,3 +6,7 @@ __pycache__/
 .DS_Store
 
 tests/eval/results/
+
+.cache/
+.claude/
+runs/scope_bench_*.json

@@ -5,6 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.10.0",
+    "asyncpg>=0.29",
     "fastapi>=0.136.1",
     "httpx>=0.28.1",
     "itsdangerous>=2.2.0",
@@ -23,13 +24,23 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# Default to "everything except eval" so a plain `pytest` invocation never
-# accidentally fires the live (slow + costs money) eval. Opt in explicitly
-# with `pytest -m eval` to run only eval, or `pytest -m "eval or not eval"`
-# to run both. The `--strict-markers` would be nice but we keep the float
-# loose so contributors can add ad-hoc markers without ceremony.
-addopts = "-m 'not eval and not triage_regression'"
+# Default to "everything except live evals" so a plain `pytest` invocation
+# never accidentally fires the live (slow + costs money) eval. Opt in
+# explicitly with one of the eval markers below. `--strict-markers` would
+# be nice but we keep it loose so contributors can add ad-hoc markers
+# without ceremony.
+#
+# Two live-eval modes:
+#   `pytest -m eval_sample` — fast 5-PR live eval (~1 min, ~$0.10).
+#       Designed for push-time / pre-merge sanity. Catches structural drift
+#       in the agent's outputs (rationale coverage, schema shape, no
+#       markdown leak) without paying for the full curated set.
+#   `pytest -m eval`        — full 20-PR live eval (~5 min, ~$0.50).
+#       The deep run that also feeds the human-grading summary.md. Use
+#       before tagging a release or after a meaningful prompt/skill edit.
+addopts = "-m 'not eval and not eval_sample and not triage_regression'"
 markers = [
-    "eval: live end-to-end eval against the curated PR set (slow, costs LLM money, opt-in only). Run with `pytest -m eval`.",
+    "eval: live end-to-end eval against the full curated PR set (~5 min, ~$0.50). Opt in with `pytest -m eval`.",
+    "eval_sample: live eval against a 5-PR sample for fast push-time signal (~1 min, ~$0.10). Opt in with `pytest -m eval_sample`.",
     "triage_regression: focused single-PR LLM tests that pin specific classifier regressions using fixture-injected gather payloads (~10s, ~$0.02 per test). Opt in with `pytest -m triage_regression`. Use these to lock in a specific bug fix without paying the full eval bill.",
 ]
