@@ -7,7 +7,6 @@ import secrets
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -25,6 +24,7 @@ from pydantic_ai.providers.litellm import LiteLLMProvider
 from pydantic_ai.tools import ToolDefinition
 
 import slack_handler
+from plugins import TOOL_FILTER_PLUGINS, ChatDeps
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -1170,17 +1170,6 @@ CHAT_SYSTEM_PROMPT = (
     "If the user's request doesn't fit either skill, just answer normally."
 )
 
-@dataclass
-class ChatDeps:
-    """Per-call context for chat_agent. Populated at the call site (web /chat
-    or Slack), read by tool-filter plugins to gate which tools the LLM sees
-    on this turn. All fields optional so callers can fill what they have."""
-
-    user_id: str | None = None
-    workspace_id: str | None = None
-    channel_id: str | None = None
-
-
 async def _filter_chat_tools(
     ctx: RunContext[ChatDeps],
     tools: list[ToolDefinition],
@@ -1190,8 +1179,6 @@ async def _filter_chat_tools(
     allowed to see this turn. Each registered plugin sees the prior plugin's
     output, so deny rules compose: once a plugin drops a tool, later plugins
     cannot bring it back."""
-    from plugins import TOOL_FILTER_PLUGINS
-
     for plugin in TOOL_FILTER_PLUGINS:
         tools = await plugin.filter(ctx.deps, tools)
     return tools
@@ -1947,7 +1934,12 @@ async def chat_api(req: ChatRequest, request: Request) -> ChatResponse:
         thread["title"] = req.title
 
     history = thread["history"]
-    deps = ChatDeps(user_id=request.session.get("user"))
+    # When AUTH_ENABLED is False, require_login is a no-op and the session
+    # has no "user" key — fall back to a stable sentinel so plugins see a
+    # consistent identity in dev rather than None (which trips silent-deny
+    # paths in CircleCIAccessPlugin et al.).
+    web_user = request.session.get("user") or ("dev-local" if not AUTH_ENABLED else None)
+    deps = ChatDeps(user_id=web_user)
     try:
         result = await chat_agent.run(req.message, message_history=history, deps=deps)
         output = result.output

@@ -12,12 +12,11 @@ hook site (`_filter_chat_tools` in `app.py`).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from pydantic_ai.tools import ToolDefinition
 
-if TYPE_CHECKING:
-    from app import ChatDeps
+from .deps import ChatDeps
 
 
 class ToolFilterPlugin(Protocol):
