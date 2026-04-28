@@ -79,6 +79,25 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project
 
 COPY . /app
+
+# ---- skills submodule ------------------------------------------------------
+# `skills/pr-review-agent-skills` is a git submodule in the parent repo, so
+# `COPY . /app` pulls in only the empty placeholder directory (.git is in
+# .dockerignore, so `git submodule update` from inside the container can't
+# work either). Clone the submodule directly and pin to the SHA the parent
+# repo gitlinks, so the skill never drifts out from under the bot.
+# karpathy_check._resolve_skill_path() looks for SKILL.md at this exact path
+# under DEFAULT_SKILL — without it, every karpathy run logs
+# `karpathy_skipped reason=no_skill`.
+# Pinned to a SHA that contains litellm-karpathy-check/SKILL.md. The parent
+# repo's gitlink (17797eb) predates the karpathy skill being added upstream,
+# so we deliberately move past the gitlinked commit here. Bump when the
+# upstream skill content changes.
+ARG SKILLS_SHA=7ad6f131d90b151ff98373b6583f51c483cb2826
+RUN rm -rf /app/skills/pr-review-agent-skills \
+ && git clone https://github.com/BerriAI/pr-review-agent-skills.git /app/skills/pr-review-agent-skills \
+ && git -C /app/skills/pr-review-agent-skills checkout --detach "${SKILLS_SHA}"
+
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked
 
