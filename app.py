@@ -1174,11 +1174,6 @@ async def _filter_chat_tools(
     ctx: RunContext[ChatDeps],
     tools: list[ToolDefinition],
 ) -> list[ToolDefinition]:
-    """Tool filter step. Runs before every LLM call (including mid-loop steps),
-    receives the full registered tool set, returns the subset the model is
-    allowed to see this turn. Each registered plugin sees the prior plugin's
-    output, so deny rules compose: once a plugin drops a tool, later plugins
-    cannot bring it back."""
     for plugin in TOOL_FILTER_PLUGINS:
         tools = await plugin.filter(ctx.deps, tools)
     return tools
@@ -1934,10 +1929,8 @@ async def chat_api(req: ChatRequest, request: Request) -> ChatResponse:
         thread["title"] = req.title
 
     history = thread["history"]
-    # When AUTH_ENABLED is False, require_login is a no-op and the session
-    # has no "user" key — fall back to a stable sentinel so plugins see a
-    # consistent identity in dev rather than None (which trips silent-deny
-    # paths in CircleCIAccessPlugin et al.).
+    # AUTH_ENABLED=False means require_login is a no-op and session["user"]
+    # is unset — give plugins a stable sentinel instead of None.
     web_user = request.session.get("user") or ("dev-local" if not AUTH_ENABLED else None)
     deps = ChatDeps(user_id=web_user)
     try:

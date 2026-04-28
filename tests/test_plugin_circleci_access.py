@@ -1,10 +1,3 @@
-"""Unit tests for the CircleCI tool-access plugin.
-
-Pure-fn tests against the plugin in isolation — no chat_agent, no LLM, no
-network. Each case constructs a ChatDeps + a synthetic tool list and asserts
-which tools survive the filter under different env-var configs.
-"""
-
 import asyncio
 
 import pytest
@@ -24,8 +17,6 @@ def _tool(name: str) -> ToolDefinition:
 
 @pytest.fixture
 def tools() -> list[ToolDefinition]:
-    # Mix of CircleCI-prefixed and non-CircleCI tools so we can confirm the
-    # gate is prefix-scoped and doesn't accidentally drop unrelated tools.
     return [
         _tool(f"{CIRCLECI_TOOL_PREFIX}rerun_failed"),
         _tool(f"{CIRCLECI_TOOL_PREFIX}fetch_logs"),
@@ -41,8 +32,6 @@ def plugin() -> CircleCIAccessPlugin:
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):
-    # Each test starts from an empty allowlist so leftover env from the dev
-    # shell or another test can't leak in.
     monkeypatch.delenv("CIRCLECI_ALLOWED_USER_IDS", raising=False)
     monkeypatch.delenv("CIRCLECI_ALLOWED_CHANNEL_IDS", raising=False)
 
@@ -74,7 +63,7 @@ def test_blocked_caller_loses_circleci_tools_only(plugin, tools):
     assert names == {"run_pr_review", "add_memory"}
 
 
-def test_no_caller_id_blocks_circleci(plugin, tools, caplog):
+def test_no_caller_id_blocks_circleci_and_logs(plugin, tools, caplog):
     deps = ChatDeps()
 
     with caplog.at_level("WARNING", logger="litellm-bot.plugins.circleci_access"):
@@ -85,7 +74,7 @@ def test_no_caller_id_blocks_circleci(plugin, tools, caplog):
 
 
 def test_no_circleci_tools_registered_is_passthrough(plugin):
-    deps = ChatDeps()  # no allowlist match
+    deps = ChatDeps()
     safe = [_tool("run_pr_review"), _tool("add_memory")]
 
     out = asyncio.run(plugin.filter(deps, safe))
