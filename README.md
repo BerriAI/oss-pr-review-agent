@@ -124,6 +124,8 @@ Run `fly launch` (Fly.io reads `Procfile`) or create a new Python service on Ren
 | `LITELLM_MODEL` | no | Model alias the proxy routes. Defaults to `claude-sonnet-4-6` |
 | `GITHUB_TOKEN` | yes | PAT with `public_repo` — required by the skill |
 | `PORT` | no | Defaults to 8000 |
+| `ADMIN_USERNAME` + `ADMIN_PASSWORD` | no | Set BOTH to gate `/chat` behind a username+password form. Unset = wide-open `/chat` (local dev). When set, also set `SESSION_SECRET` so sessions survive process restarts. |
+| `BOT_API_KEYS` | no | CSV of bearer tokens accepted on `/chat/api` for programmatic clients (the [`litellm-loop`](https://github.com/BerriAI/pr-review-agent-skills/tree/main/litellm-loop) skill, CI bots, etc.). Mint with `openssl rand -base64 32`; clients pass `Authorization: Bearer <key>`. Multiple keys co-exist for rotation. Compatible with `ADMIN_USERNAME`/`ADMIN_PASSWORD` — either auth path is accepted. |
 | `LOGFIRE_TOKEN` | no | Pydantic Logfire write token. When set, agent runs, HTTPX calls, FastAPI requests, and the gather subprocess are traced and shipped to Logfire. No-op without it. |
 
 ## Tests

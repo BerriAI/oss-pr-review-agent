@@ -2067,21 +2067,36 @@ logfire.instrument_fastapi(app, capture_headers=True)
 # both turns the gate on.
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
-AUTH_ENABLED = bool(ADMIN_USERNAME and ADMIN_PASSWORD)
+# Bearer-token auth for programmatic clients (the `litellm-loop` skill, CI bots,
+# etc.) so they can hit /chat/api without a browser login flow. CSV so multiple
+# keys can co-exist during rotation — issue a new one, leave the old one in the
+# list until clients have cut over, then drop it. Whitespace tolerated; empty
+# entries dropped. Unset / empty disables the bearer path entirely (the
+# session-cookie path still works as before).
+BOT_API_KEYS = frozenset(
+    k.strip() for k in (os.environ.get("BOT_API_KEYS") or "").split(",") if k.strip()
+)
+# Auth gate stays opt-in: if neither ADMIN_USERNAME/ADMIN_PASSWORD nor
+# BOT_API_KEYS is set, /chat is wide open (same as before). Setting either path
+# turns the gate on; both paths are accepted independently by `require_login`.
+AUTH_ENABLED = bool(ADMIN_USERNAME and ADMIN_PASSWORD) or bool(BOT_API_KEYS)
+SESSION_AUTH_ENABLED = bool(ADMIN_USERNAME and ADMIN_PASSWORD)
 
 # SESSION_SECRET signs the session cookie. If unset we generate one per
 # process — fine for single-instance dev, but it means every restart logs
 # everyone out. Set it explicitly in prod to keep sessions across restarts.
 SESSION_SECRET = os.environ.get("SESSION_SECRET")
-if AUTH_ENABLED and not SESSION_SECRET:
+if SESSION_AUTH_ENABLED and not SESSION_SECRET:
     SESSION_SECRET = secrets.token_urlsafe(32)
     log.warning(
         "SESSION_SECRET unset; generated ephemeral one. Sessions will not survive restarts."
     )
 if not AUTH_ENABLED:
-    log.warning("ADMIN_USERNAME/ADMIN_PASSWORD unset; /chat is unauthenticated")
+    log.warning(
+        "ADMIN_USERNAME/ADMIN_PASSWORD and BOT_API_KEYS unset; /chat is unauthenticated"
+    )
 
-if AUTH_ENABLED:
+if SESSION_AUTH_ENABLED:
     app.add_middleware(
         SessionMiddleware,
         secret_key=SESSION_SECRET,
@@ -2091,20 +2106,56 @@ if AUTH_ENABLED:
     )
 
 
+def _bearer_token(request: Request) -> str | None:
+    """Pull the bearer token out of `Authorization: Bearer <token>`, or None."""
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("bearer "):
+        return None
+    return header[len("bearer ") :].strip() or None
+
+
+def _bearer_ok(token: str) -> bool:
+    """Constant-time compare against every configured key.
+
+    We can't short-circuit on first match (would leak the position of the
+    matching key via timing), so we compare against all of them and OR the
+    results. With <100 keys this stays well under a microsecond and matches
+    the safety bar of `secrets.compare_digest` used on the password path.
+    """
+    matched = False
+    for key in BOT_API_KEYS:
+        if secrets.compare_digest(token, key):
+            matched = True
+    return matched
+
+
 def require_login(request: Request) -> None:
-    """FastAPI dependency: 401 if no session, 302 to /login for HTML requests.
+    """FastAPI dependency: accept either a session cookie OR a bearer token.
+
+    Two independent credential paths:
+      - Session cookie (browser → /login form): set by `request.session["user"]`
+        when ADMIN_USERNAME/ADMIN_PASSWORD validates.
+      - Bearer token (programmatic clients): `Authorization: Bearer <key>` where
+        <key> is in BOT_API_KEYS.
 
     No-op when AUTH_ENABLED is False so local dev without env vars Just Works.
     """
     if not AUTH_ENABLED:
         return
-    if request.session.get("user") == ADMIN_USERNAME:
+    # Bearer path first: cheaper to check than the session, and the common case
+    # for /chat/api clients (the dev UI uses cookies, but every other caller
+    # passes a key). Skipped entirely when BOT_API_KEYS is empty.
+    if BOT_API_KEYS:
+        token = _bearer_token(request)
+        if token is not None and _bearer_ok(token):
+            return
+    if SESSION_AUTH_ENABLED and request.session.get("user") == ADMIN_USERNAME:
         return
     # Browser navigations (Accept: text/html) get redirected so the user lands
     # on the login form. XHR/fetch from the chat UI gets a JSON 401 instead so
-    # the frontend can surface it cleanly.
+    # the frontend can surface it cleanly. Bearer-only clients always get 401.
     accept = request.headers.get("accept", "")
-    if "text/html" in accept and request.method == "GET":
+    if SESSION_AUTH_ENABLED and "text/html" in accept and request.method == "GET":
         raise HTTPException(
             status_code=303,
             detail="login required",
@@ -2591,9 +2642,19 @@ async def chat_api(req: ChatRequest, request: Request) -> ChatResponse:
         thread["title"] = req.title
 
     history = thread["history"]
-    # AUTH_ENABLED=False means require_login is a no-op and session["user"]
-    # is unset — give plugins a stable sentinel instead of None.
-    web_user = request.session.get("user") or ("dev-local" if not AUTH_ENABLED else None)
+    # User identity for plugins (e.g. memory storage). Three paths:
+    #   - SESSION_AUTH_ENABLED + signed in -> session["user"] (admin name)
+    #   - bearer-token client -> "bot-api-bearer" sentinel (anonymous; we
+    #     don't try to map keys back to identities — rotate via BOT_API_KEYS)
+    #   - AUTH_ENABLED=False (local dev) -> "dev-local" sentinel
+    if SESSION_AUTH_ENABLED:
+        web_user = request.session.get("user") or (
+            "bot-api-bearer" if BOT_API_KEYS else None
+        )
+    elif BOT_API_KEYS:
+        web_user = "bot-api-bearer"
+    else:
+        web_user = "dev-local"
     deps = ChatDeps(user_id=web_user)
     try:
         result = await chat_agent.run(req.message, message_history=history, deps=deps)
@@ -4066,7 +4127,7 @@ def _render_login(error: str = "") -> str:
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_form(request: Request) -> str:
-    if AUTH_ENABLED and request.session.get("user") == ADMIN_USERNAME:
+    if SESSION_AUTH_ENABLED and request.session.get("user") == ADMIN_USERNAME:
         # Already signed in — bounce back to /chat instead of showing the form.
         raise HTTPException(303, headers={"Location": "/chat"})
     return _render_login()
@@ -4078,8 +4139,17 @@ async def login_submit(
     username: str = Form(...),
     password: str = Form(...),
 ):
-    if not AUTH_ENABLED:
-        # Auth turned off entirely — nothing to validate, just send them in.
+    if not SESSION_AUTH_ENABLED:
+        # No password configured — either auth is off entirely (send them in)
+        # or this is a bearer-only deployment (no session to set; tell them).
+        if AUTH_ENABLED:
+            return HTMLResponse(
+                _render_login(
+                    "Password login is not enabled on this instance. "
+                    "Use a bearer token against /chat/api instead."
+                ),
+                status_code=400,
+            )
         return RedirectResponse("/chat", status_code=303)
     # compare_digest avoids a timing oracle on the username/password compare.
     ok = secrets.compare_digest(
@@ -4095,7 +4165,7 @@ async def login_submit(
 
 @app.post("/logout")
 async def logout(request: Request):
-    if AUTH_ENABLED:
+    if SESSION_AUTH_ENABLED:
         request.session.clear()
     return RedirectResponse("/login", status_code=303)
 
