@@ -1,0 +1,33 @@
+{
+  "_about": "Production regressions caught from real Shin Slack PR-review threads. Each entry is a PR where the agent's verdict drifted from what the human reviewer would have wanted: missed bug-class breadth, hallucinated pattern findings, or non-surgical fixes the agent waved through. Lives under set_name='shin_regressions' so it can be run on its own as a tight regression loop without polluting the default set's agree/disagree matrix. Migrated separately by scripts/migrate_eval_sets.py.",
+  "repo": "BerriAI/litellm",
+  "set_name": "shin_regressions",
+  "_label_legend": {
+    "ready": "Human grader judged the PR ready for review (would map to agent verdict READY).",
+    "not_ready": "Human grader judged the PR NOT ready for review (would map to agent verdict BLOCKED, or WAITING when the only blocker is in-progress checks).",
+    "null": "Not yet graded by a human \u2014 agent verdict shown but no agree/disagree contribution to the matrix."
+  },
+  "prs": [
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26417",
+      "category": "narrow_fix_missed_class",
+      "notes": "Image-generation health-check fix: guards _update_litellm_params_for_health_check against injecting max_tokens when mode=image_generation. Agent shipped READY 5/5 because the PR itself is small, clean, all checks green, Greptile 5/5. Regression target: agent should have noticed the guard is mode-exclusive but the same bug class hits embedding, audio_speech, audio_transcription, video_generation, and rerank \u2014 _filter_model_params only strips messages, not max_tokens. A correct review flags the under-scoped fix and proposes broadening to an allowlist of modes that accept max_tokens (chat/completion/responses).",
+      "human_label": "not_ready",
+      "human_notes": "Agent gave 5/5 READY but missed bug-class breadth. The guard is exclusive to image_generation; same 400-on-unknown-field shape applies to embedding/audio/video/rerank. Want the agent to flag narrow-fix risk and recommend an allowlist (chat/completion/responses) so we don't re-file this bug per-mode. Source: Shin Slack thread on PR 26417 (Sehwan Kim review request, 2026-04-27)."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/25613",
+      "category": "hallucinated_finding_and_non_surgical",
+      "notes": "Proxy /v1/models filter for unresolvable model strings. Two failures stacked on the same PR: (1) HALLUCINATION \u2014 agent reported a medium-risk pattern finding 'Bare return (None) in SpecialModelNames branch violates declared -> bool' against litellm/proxy/auth/model_checks.py; the author confirmed no such bare-return exists in the function. Regression target: pattern reviewer must not invent code shapes that aren't in the diff. (2) NON-SURGICAL \u2014 the fix is broader than issue #25550 needs; Karpathy 'make surgical changes' principle says trim to the minimum that resolves the leak. Agent should call out scope drift, not just merge-confidence-dock on Greptile.",
+      "human_label": "not_ready",
+      "human_notes": "Two distinct regressions on one PR. Hallucinated 'bare return (None)' finding \u2014 author looked, the function has no bare return; pattern reviewer fabricated the shape. Separately, the fix is non-surgical for issue #25550: too broad, touches more than the leak path needs. Want both behaviors caught: (a) ground pattern findings in actual diff/file content, (b) flag scope drift against the linked issue. Source: Shin Slack thread on PR 25613 (2026-04-27)."
+    },
+    {
+      "url": "https://github.com/BerriAI/litellm/pull/26595",
+      "category": "narrow_fix_missed_class_dead_code",
+      "notes": "OVHCloud field migration (reasoning_content<-reasoning, duration<-seconds, deadline 2026-05-11). Greptile 5/5, all checks green, looks ready. Regression target: agent should detect that the chat-side fix targets `OVHCloudChatCompletionStreamingHandler.chunk_parser`, but `OVHCloudChatConfig` does NOT override `get_model_response_iterator` from the OpenAI parent, so production OVHCloud streaming runs through `OpenAIChatCompletionStreamingHandler._map_reasoning_to_reasoning_content` (gpt_transformation.py:800-801) instead. The 10-line chat diff and its 73-line test suite exercise a class with zero production call-sites. Non-streaming reasoning is already handled by `_extract_reasoning_content` (common_utils.py:1308-1311). Audio-transcription path (seconds->duration) is the only branch that lands in real code. A correct review flags either (a) the chat fix should override get_model_response_iterator to give the new handler a call-site, or (b) delete the OVHCloud streaming handler entirely and rely on the already-correct parent.",
+      "human_label": "not_ready",
+      "human_notes": "Initial concern from Shin Slack thread: reasoning conversion only on chunk_parser, non-streaming uncovered. Verified ground truth is stronger: (1) non-streaming already handled by `_extract_reasoning_content` in litellm_core_utils/prompt_templates/common_utils.py:1308-1311 (returns reasoning when reasoning_content absent), (2) the OVHCloud streaming handler the PR modifies (`OVHCloudChatCompletionStreamingHandler`) has zero production call-sites \u2014 grep finds it only in its own definition + test imports, (3) production OVHCloud streaming is served by `OpenAIChatCompletionStreamingHandler._map_reasoning_to_reasoning_content` (litellm/llms/openai/chat/gpt_transformation.py:800-801) which already does `delta['reasoning_content'] = delta.pop('reasoning')`. So the chat-side fix is dead-code maintenance + tests for an unreachable path. The audio_transcription change is the only branch that lands in production code. Want the agent to detect the missing get_model_response_iterator override + flag the dead-class shape. Source: Shin Slack thread on PR 26595 (2026-04-27)."
+    }
+  ]
+}

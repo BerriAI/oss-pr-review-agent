@@ -1,0 +1,501 @@
+{
+  "owner": "BerriAI",
+  "repo": "litellm",
+  "pr_number": 26441,
+  "pr_title": "fix(redis): cache GCP IAM token to prevent async event loop blocking",
+  "pr_author": "harish-berri",
+  "head_sha": "7021eb41c7e6f33afdbff93770bab533fd754e3b",
+  "passing_checks": [
+    "ci/circleci: agent_testing",
+    "ci/circleci: search_testing",
+    "ci/circleci: redis_caching_unit_tests",
+    "ci/circleci: litellm_router_unit_testing",
+    "ci/circleci: auth_ui_unit_tests",
+    "ci/circleci: build_docker_database_image",
+    "ci/circleci: ui_build",
+    "ci/circleci: proxy_build_from_pip_tests",
+    "ci/circleci: litellm_assistants_api_testing",
+    "ci/circleci: google_generate_content_endpoint_testing",
+    "ci/circleci: ocr_testing",
+    "ci/circleci: langfuse_logging_unit_tests",
+    "ci/circleci: installing_litellm_on_python",
+    "ci/circleci: audio_testing",
+    "ci/circleci: guardrails_testing",
+    "ci/circleci: installing_litellm_on_python_v2_migration_resolver",
+    "ci/circleci: realtime_translation_testing",
+    "ci/circleci: litellm_mapped_enterprise_tests",
+    "ci/circleci: batches_testing",
+    "ci/circleci: using_litellm_on_windows",
+    "ci/circleci: installing_litellm_on_python_3_13",
+    "ci/circleci: image_gen_testing",
+    "ci/circleci: test_bad_database_url",
+    "ci/circleci: db_migration_disable_update_check",
+    "ci/circleci: helm_chart_testing",
+    "ci/circleci: proxy_spend_accuracy_tests",
+    "ci/circleci: proxy_multi_instance_tests",
+    "ci/circleci: proxy_store_model_in_db_tests",
+    "ci/circleci: e2e_ui_testing",
+    "ci/circleci: ui_unit_tests",
+    "ci/circleci: proxy_logging_guardrails_model_info_tests",
+    "db-and-spend / Upload coverage to Codecov",
+    "auth-checks / Upload coverage to Codecov",
+    "endpoints-and-responses / Upload coverage to Codecov",
+    "jwt-and-keys / Upload coverage to Codecov",
+    "budgets / Upload coverage to Codecov",
+    "proxy-runtime / Upload coverage to Codecov",
+    "proxy-utils / Upload coverage to Codecov",
+    "logging-misc / Upload coverage to Codecov",
+    "custom-logging / Upload coverage to Codecov",
+    "proxy-server-core / Upload coverage to Codecov",
+    "guardrails-hooks / Upload coverage to Codecov",
+    "schema-migration / Upload coverage to Codecov",
+    "proxy-infra / Upload coverage to Codecov",
+    "key-generation / Upload coverage to Codecov",
+    "misc / Upload coverage to Codecov",
+    "proxy-endpoints / Upload coverage to Codecov",
+    "All Other Providers / Upload coverage to Codecov",
+    "proxy-auth / Upload coverage to Codecov",
+    "responses-caching-types / Upload coverage to Codecov",
+    "enterprise-routing / Upload coverage to Codecov",
+    "integrations / Upload coverage to Codecov",
+    "core-utils / Upload coverage to Codecov",
+    "security / Upload coverage to Codecov",
+    "Vertex AI / Upload coverage to Codecov",
+    "guardrails-hooks / Run tests",
+    "db-and-spend / Run tests",
+    "key-generation / Run tests",
+    "schema-migration / Run tests",
+    "auth-checks / Run tests",
+    "logging-misc / Run tests",
+    "jwt-and-keys / Run tests",
+    "budgets / Run tests",
+    "endpoints-and-responses / Run tests",
+    "custom-logging / Run tests",
+    "proxy-server-core / Run tests",
+    "proxy-runtime / Run tests",
+    "proxy-utils / Run tests",
+    "assert-shard-coverage",
+    "proxy-infra / Run tests",
+    "Greptile Review",
+    "core-utils / Run tests",
+    "proxy-auth / Run tests",
+    "proxy-endpoints / Run tests",
+    "integrations / Run tests",
+    "enterprise-routing / Run tests",
+    "misc / Run tests",
+    "All Other Providers / Run tests",
+    "key-generation",
+    "Vertex AI / Run tests",
+    "responses-caching-types / Run tests",
+    "proxy-server",
+    "proxy-user-auth-and-spend",
+    "code-quality",
+    "auth-and-jwt",
+    "proxy-config",
+    "proxy-server-extras",
+    "proxy-utils",
+    "proxy-response-and-misc",
+    "proxy-token-counter",
+    "semgrep",
+    "test",
+    "documentation",
+    "validate-model-prices-json",
+    "unit-test",
+    "Veria AI - PR Review",
+    "build-ui",
+    "test-server-root-path (/api/v1)",
+    "test-server-root-path (/llmproxy)",
+    "lint",
+    "secret-scan",
+    "GitGuardian Security Checks",
+    "security / Run tests"
+  ],
+  "in_progress_checks": [],
+  "failing_check_contexts": [
+    {
+      "check_name": "ci/circleci: llm_responses_api_testing",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\nsponses_cancel_endpoint[False]\r\n  /home/circleci/project/litellm/litellm_core_utils/logging_worker.py:75: RuntimeWarning: coroutine 'Logging.async_success_handler' was never awaited\r\n    self._queue = None\r\n  Enable tracemalloc to get traceback where the object was allocated.\r\n  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.\r\n\r\ntests/llm_responses_api_testing/test_openai_responses_api.py::test_basic_openai_responses_api_streaming_with_logging\r\n  tests/llm_responses_api_testing/test_openai_responses_api.py:101: PytestWarning: The test <Function test_basic_openai_responses_api_streaming_with_logging> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.\r\n    @pytest.mark.asyncio\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n------ generated xml file: /home/circleci/project/test-results/junit.xml -------\r\n\r\n======================= the following tests were retried =======================\r\n\ttest_basic_openai_responses_api_streaming[False] failed on attempt 1! Retrying!\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/litellm/llms/anthropic/chat/handler.py\", line 91, in make_call\r\n\t    response = await client.post(\r\n\t               ^^^^^^^^^^^^^^^^^^\r\n\tlitellm.llms.custom_httpx.http_handler.MaskedHTTPStatusError: Client error '400 Bad Request' fo\n...[truncated middle, 26294 chars]\nthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaNzMxMaYMG1V2VnNYKqp\"}'\r\n\t\r\n\tDuring handling of the above exception, another exception occurred:\r\n\t\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/runner.py\", line 341, in from_call\r\n\t    result: TResult | None = func()\r\n\t                             ^^^^^^\r\n\tlitellm.exceptions.BadRequestError: litellm.BadRequestError: AnthropicException - b'{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaNzMxMaYMG1V2VnNYKqp\"}'\r\n\r\n=========================== end of test retry report ===========================\r\n\r\n============================= slowest 5 durations ==============================\r\n6.11s call     tests/llm_responses_api_testing/test_openai_responses_api.py::test_basic_openai_responses_api_non_streaming_with_logging\r\n5.01s call     tests/llm_responses_api_testing/test_openai_responses_api.py::test_basic_openai_responses_api_streaming_with_logging\r\n3.79s call     tests/llm_responses_api_testing/test_azure_responses_api.py::test_azure_responses_api_preview_api_version\r\n3.73s call     tests/llm_responses_api_testing/test_google_ai_studio_responses_api.py::TestGoogleAIStudioResponsesAPITest::test_basic_openai_list_input_items_endpoint\r\n3.41s call     tests/llm_re\n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557080",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: pass_through_unit_testing",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\nropic_messages_router_streaming_with_bad_request \r\n[gw0] [  4%] FAILED tests/pass_through_unit_tests/messages_api_structured_output/test_anthropic_api_structured_output.py::TestAnthropicAPIStructuredOutput::test_structured_output_e2e <- tests/pass_through_unit_tests/messages_api_structured_output/base_anthropic_messages_structured_output_test.py \r\n[gw1] [  4%] PASSED tests/pass_through_unit_tests/test_anthropic_messages_passthrough.py::test_anthropic_messages_router_streaming_with_bad_request \r\ntests/pass_through_unit_tests/test_anthropic_messages_passthrough.py::test_anthropic_messages_litellm_router_non_streaming \r\n[gw2] [  5%] FAILED tests/pass_through_unit_tests/test_anthropic_messages_passthrough.py::TestAnthropicDirectAPI::test_anthropic_messages_litellm_router_streaming_with_logging <- tests/pass_through_unit_tests/base_anthropic_unified_messages_test.py \r\n[gw3] [  6%] FAILED tests/pass_through_unit_tests/test_anthropic_messages_passthrough.py::test_anthropic_messages_litellm_router_non_streaming_with_logging \r\n[gw1] [  7%] FAILED tests/pass_through_unit_tests/test_anthropic_messages_passthrough.py::test_anthropic_messages_litellm_router_non_streaming --- Logging error ---\r\nTraceback (most recent call last):\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/logging/__init__.py\", line 1163, in emit\r\n    stream.write(msg + self.terminator)\r\nValueError: I/O operation on closed file.\r\nCall stack:\r\n  File \"/home/circleci/project/litellm/litellm_core_utils/loggi\n...[truncated middle, 149670 chars]\nps://api.anthropic.com/v1/messages'\r\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400\r\n\r\nDuring handling of the above exception, another exception occurred:\r\n\r\nTraceback (most recent call last):\r\n  File \"/home/circleci/project/litellm/router.py\", line 5625, in async_function_with_fallbacks\r\n    response = await self.async_function_with_retries(*args, **kwargs)\r\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/home/circleci/project/litellm/router.py\", line 5780, in async_function_with_retries\r\n    self.should_retry_this_error(\r\n  File \"/home/circleci/project/litellm/router.py\", line 5984, in should_retry_this_error\r\n    raise error\r\n  File \"/home/circleci/project/litellm/router.py\", line 5731, in async_function_with_retries\r\n    response = await self.make_call(original_function, *args, **kwargs)\r\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/home/circleci/project/litellm/router.py\", line 5899, in make_call\r\n    response = await response\r\n               ^^^^^^^^^^^^^^\r\n  File \"/home/circleci/project/litellm/router.py\", line 3939, in _ageneric_api_call_with_fallbacks_helper\r\n    raise e\r\n  File \"/home/circleci/project/litellm/router.py\", line 3925, in _ageneric_api_call_with_fallbacks_helper\r\n    response = await response  # type: ignore\r\n               ^^^^^^^^^^^^^^\r\n  File \"/home/circleci/project/litellm/utils.py\", line 2097, in wrapper_async\r\n    raise e\r\n  File \"/home\n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557058",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: litellm_utils_testing",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\ne-sonnet-4-20250514', 'messages': [{'role': 'user', 'content': 'Hello, how are you today?'}]}\r\n17:28:04 - LiteLLM:DEBUG: handler.py:74 - Making request to: https://api.anthropic.com/v1/messages/count_tokens\r\n17:28:04 - LiteLLM:DEBUG: http_handler.py:840 - Using AiohttpTransport...\r\n17:28:04 - LiteLLM:DEBUG: http_handler.py:908 - Creating AiohttpTransport...\r\n17:28:04 - LiteLLM:DEBUG: http_handler.py:922 - NEW SESSION: Creating new ClientSession (no shared session provided)\r\n17:28:04 - LiteLLM:DEBUG: logging_utils.py:272 - `logging_obj` not found - unable to track `llm_api_duration_ms\r\n17:28:04 - LiteLLM:ERROR: handler.py:118 - HTTP error in CountTokens handler: Client error '400 Bad Request' for url 'https://api.anthropic.com/v1/messages/count_tokens'\r\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400\r\n17:28:04 - LiteLLM:WARNING: token_counter.py:84 - Anthropic CountTokens API error: status=400, message={\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaNzP6tJyL8QS7xiRYL1A\"}\r\n\r\n[gw0] FAILED tests/litellm_utils_tests/test_anthropic_token_counter.py::TestAnthropicTokenCounter::test_count_tokens_basic <- tests/litellm_utils_tests/base_token_counter_test.py \r\n[gw1] PASSED tests/litellm_utils_tests/test_utils.py::test_add_custom_logger_callback_to_specific_event \r\ntests/litellm_utils\n...[truncated middle, 320640 chars]\ntests/litellm_utils_tests/test_utils.py::test_add_custom_logger_callback_to_specific_event_with_duplicates_callbacks\r\n=========================== short test summary info ============================\r\nFAILED tests/litellm_utils_tests/test_anthropic_token_counter.py::TestAnthropicTokenCounter::test_count_tokens_basic - AssertionError: Token count should be > 0, got 0\r\nassert 0 > 0\r\n +  where 0 = TokenCountResponse(total_tokens=0, request_model='claude-sonnet-4-20250514', model_used='claude-sonnet-4-20250514', tokenizer_type='anthropic_api', original_response=None, error=****, error_message='{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaNzP6tJyL8QS7xiRYL1A\"}', status_code=400).total_tokens\r\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\r\n!!!!!!!!!!!! xdist.dsession.Interrupted: stopping after 1 failures !!!!!!!!!!!!!\r\n======== 1 failed, 36 passed, 1 skipped, 8 warnings in 81.69s (0:01:21) ========\r\n\n\r\nExited with code exit status 2\r\n",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557093",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: logging_testing",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\nhing Staff Engineer - RocketMoney The LiteLLM proxy has streamlined our management of LLMs by standardizing logging, the OpenAI API, and authentication for all models, significantly reducing operational complexities. This enables us to quickly adapt to changing demands and swiftly adopt new models. #### Test Test Test ### Netflix uses LiteLLM to give developers Day 0 LLM access #### David Leen Staff Software Engineer - Netflix LiteLLM has let my team provide the latest LLM models to our users usually within a day of them being released. Without LiteLLM this would be hours of work each time a new model is announced. It means we don\\'t have to transform inputs and outputs across providers and has saved us months of work. #### Mark Koltnuk Principal Architect (GenAI Platform) - Lemonade Our experience with LiteLLM and Langfuse at Lemonade has been outstanding.\", \\'type\\': \\'text\\'}], \\'file_id\\': \\'https://www.litellm.ai\\', \\'filename\\': \\'www.litellm.ai\\', \\'attributes\\': {\\'x-amz-bedrock-kb-source-uri\\': \\'https://www.litellm.ai\\', \\'x-amz-bedrock-kb-chunk-id\\': \\'1%3A0%3AjNYPg5YByRuP5PdK96co\\', \\'x-amz-bedrock-kb-data-source-id\\': \\'CCEJIRXXFI\\'}}]}, model=None', 'traceback_str': 'Traceback (most recent call last):\\n  File \"/home/circleci/project/litellm/litellm_core_utils/litellm_logging.py\", line 1552, in _response_cost_calculator\\n    response_cost = litellm.response_cost_calculator(\\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n  File \"/home/circleci/project/lit\n...[truncated middle, 359763 chars]\nrouter.py\", line 87, in log_pre_api_call\r\n    assert isinstance(kwargs[\"litellm_params\"][\"metadata\"], dict)\r\nAssertionError: assert False\r\n +  where False = isinstance(None, dict)\r\n\r\nAssertion Error: Traceback (most recent call last):\r\n  File \"/home/circleci/project/tests/logging_callback_tests/test_custom_callback_router.py\", line 132, in log_post_api_call\r\n    assert isinstance(kwargs[\"litellm_params\"][\"metadata\"], dict)\r\nAssertionError: assert False\r\n +  where False = isinstance(None, dict)\r\n\r\n------------------------------ Captured log call -------------------------------\r\nDEBUG    LiteLLM:utils.py:482 \r\n\r\nDEBUG    LiteLLM:utils.py:482 Request to litellm:\r\nDEBUG    LiteLLM:utils.py:482 litellm.acompletion(model='claude-sonnet-4-5-20250929', messages=[{'role': 'user', 'content': 'Respond in just 1 word. Say ping'}], max_tokens=4096, stream=****)\r\nDEBUG    LiteLLM:utils.py:482 \r\n\r\nDEBUG    LiteLLM:utils.py:482 Initialized litellm callbacks, Async Success Callbacks: [<test_token_counting.TestCustomLogger object at 0x7fadb82a4500>]\r\nDEBUG    LiteLLM:utils.py:1008 Removing thought signatures from tool call IDs for non-Gemini model\r\nDEBUG    LiteLLM:litellm_logging.py:557 self.optional_params: {}\r\nDEBUG    LiteLLM:utils.py:482 ASYNC kwargs[caching]: False; litellm.cache: None; kwargs.get('cache'): None\r\nDEBUG    LiteLLM:main.py:527 \ud83d\udd04 NO SHARED SESSION: acompletion called without shared_session\r\nDEBUG    LiteLLM:utils.py:5620 checking potential_model_names in litellm.model_cost:\n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557068",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: litellm_router_testing",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\ne_fallbacks[****] \r\ntests/local_testing/test_router_retries.py::test_timeout_for_rate_limit_error_with_healthy_deployments[1-60] \r\n[gw1] [ 97%] PASSED tests/local_testing/test_router_retries.py::test_timeout_for_rate_limit_error_with_healthy_deployments[1-60] Unclosed client session\r\nclient_session: <aiohttp.client.ClientSession object at 0x7ff42f2407a0>\r\nUnclosed connector\r\nconnections: ['deque([(<aiohttp.client_proto.ResponseHandler object at 0x7ff42d6e86b0>, 6515.745445499)])']\r\nconnector: <aiohttp.connector.TCPConnector object at 0x7ff42f240530>\r\nUnclosed client session\r\nclient_session: <aiohttp.client.ClientSession object at 0x7f25b53096a0>\r\nUnclosed connector\r\nconnections: ['deque([(<aiohttp.client_proto.ResponseHandler object at 0x7f25b50caab0>, 6525.870694358)])']\r\nconnector: <aiohttp.connector.TCPConnector object at 0x7f25b530b2c0>\r\n\r\n[gw2] [ 98%] PASSED tests/local_testing/test_router_cooldown_handlers.py::test_single_deployment_no_cooldowns_test_prod_mock_completion_calls \r\ntests/local_testing/test_router_fallbacks.py::test_sync_fallbacks \r\n[gw2] [100%] PASSED tests/local_testing/test_router_fallbacks.py::test_sync_fallbacks --- Logging error ---\r\n--- Logging error ---\r\nTraceback (most recent call last):\r\nTraceback (most recent call last):\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/logging/__init__.py\", line 1163, in emit\r\n    stream.write(msg + self.terminator)\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/logging/__init__.py\",\n...[truncated middle, 262533 chars]\nrigger a fallback. Fallbacks=[{'model': 'claude-3-haiku', 'messages': [{'role': 'user', 'content': \"Hey, how's it going?\"}]}]\r\n\r\nDuring handling of the above exception, another exception occurred:\r\n\r\nTraceback (most recent call last):\r\n  File \"/home/circleci/project/litellm/router.py\", line 5452, in async_function_with_fallbacks_common_utils\r\n    response = await run_async_fallback(\r\n               ^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/home/circleci/project/litellm/router_utils/fallback_event_handlers.py\", line 161, in run_async_fallback\r\n    raise error_from_fallbacks\r\n  File \"/home/circleci/project/litellm/router_utils/fallback_event_handlers.py\", line 139, in run_async_fallback\r\n    response = await litellm_router.async_function_with_fallbacks(\r\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/home/circleci/project/litellm/router.py\", line 5634, in async_function_with_fallbacks\r\n    return await self.async_function_with_fallbacks_common_utils(\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/home/circleci/project/litellm/router.py\", line 5591, in async_function_with_fallbacks_common_utils\r\n    raise original_exception\r\n  File \"/home/circleci/project/litellm/router.py\", line 5625, in async_function_with_fallbacks\r\n    response = await self.async_function_with_retries(*args, **kwargs)\r\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/home/circleci/project/litellm/router.py\", line 5780, in a\n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557079",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: proxy_e2e_anthropic_messages_tests",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\nhe Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\\\"},\\\"request_id\\\":\\\"req_011CaNzaz38zonL9xZrZio1S\\\"}. Received Model Group=claude-sonnet-4-5-20250929\\nAvailable Model Group Fallbacks=None\",\"type\":\"None\",\"param\":\"None\",\"code\":\"400\"}}\r\nE               assert 400 == 200\r\nE                +  where 400 = <ClientResponse(http://0.0.0.0:4000/v1/messages) [400 Bad Request]>\\n<CIMultiDictProxy('Date': 'Fri, 24 Apr 2026 17:30:44 GMT', 'Server': 'uvicorn', 'x-litellm-call-id': '651ff0e9-1bdd-4cd3-b373-02d024bd277a', 'x-litellm-model-id': '33cdbdc3292b8a3b7b01243e2e23219f59d2cf8a52c3cee770f0d4216d13b2ea', 'x-litellm-version': '1.83.13', 'x-litellm-response-cost': '0', 'x-litellm-key-spend': '0.0', 'x-litellm-timeout': '6000.0', 'Content-Length': '405', 'Content-Type': 'application/json')>\\n.status\r\n\r\ntests/proxy_e2e_anthropic_messages_tests/test_all_beta_headers.py:73: AssertionError\r\n------ generated xml file: /home/circleci/project/test-results/junit.xml -------\r\n\r\n======================= the following tests were retried =======================\r\n\ttest_anthropic_messages_with_all_beta_headers[claude-sonnet-4-5-20250929-anthropic] failed on attempt 1! Retrying!\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/runner.py\", line 341, in from_call\r\n\t    result: TResult | None = func()\r\n\t                             ^^^^^^\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/ru\n...[truncated middle, 10840 chars]\nt': '6000.0', 'Content-Length': '405', 'Content-Type': 'application/json')>\\n.status\r\n\r\n\ttest_anthropic_messages_with_all_beta_headers[claude-sonnet-4-5-20250929-anthropic] failed after 4 attempts!\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/runner.py\", line 341, in from_call\r\n\t    result: TResult | None = func()\r\n\t                             ^^^^^^\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/pytest_retry/retry_plugin.py\", line 238, in <lambda>\r\n\t    call = pytest.CallInfo.from_call(lambda: hook.pytest_runtest_call(item=item), when=\"call\")\r\n\t                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n\tAssertionError: Request should succeed, got status 400: {\"error\":{\"message\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\\\"},\\\"request_id\\\":\\\"req_011CaNzaz38zonL9xZrZio1S\\\"}. Received Model Group=claude-sonnet-4-5-20250929\\nAvailable Model Group Fallbacks=None\",\"type\":\"None\",\"param\":\"None\",\"code\":\"400\"}}\r\n\tassert 400 == 200\r\n\t +  where 400 = <ClientResponse(http://0.0.0.0:4000/v1/messages) [400 Bad Request]>\\n<CIMultiDictProxy('Date': 'Fri, 24 Apr 2026 17:30:44 GMT', 'Server': 'uvicorn', 'x-litellm-call-id': '651ff0e9-1bdd-4cd3-b373-02d024bd277a', 'x-litellm-model-id': '33cdbdc3292b8a3b7b01243e2e23219f59d2cf8a52\n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557087",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: local_testing_part1",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\nsts/local_testing/test_exceptions.py::test_bad_request_error_contains_httpx_response[openai/gpt-3.5-turbo] \r\ntests/local_testing/test_exceptions.py::test_bad_request_error_with_response_without_request \r\n[gw0] [ 96%] PASSED tests/local_testing/test_exceptions.py::test_bad_request_error_with_response_without_request \r\ntests/local_testing/test_batch_completions.py::test_batch_completion_models_all_responses \r\n[gw0] [ 97%] FAILED tests/local_testing/test_batch_completions.py::test_batch_completion_models_all_responses \r\ntests/local_testing/test_batch_completions.py::test_batch_completions \r\n[gw0] [ 97%] PASSED tests/local_testing/test_batch_completions.py::test_batch_completions \r\ntests/local_testing/test_batch_completions.py::test_batch_completions_models \r\n[gw0] [ 98%] PASSED tests/local_testing/test_batch_completions.py::test_batch_completions_models \r\n[gw1] [ 99%] PASSED tests/local_testing/test_exceptions.py::test_litellm_completion_vertex_exception \r\ntests/local_testing/test_http_parsing_utils.py::test_read_request_body_valid_json \r\n[gw1] [100%] PASSED tests/local_testing/test_http_parsing_utils.py::test_read_request_body_valid_json --- Logging error ---\r\n--- Logging error ---\r\nTraceback (most recent call last):\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/logging/__init__.py\", line 1163, in emit\r\n    stream.write(msg + self.terminator)\r\nValueError: I/O operation on closed file.\r\nCall stack:\r\nTraceback (most recent call last):\r\n  File \"/home/circleci/.pye\n...[truncated middle, 20803 chars]\n, {}) or {}\r\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\nAttributeError: 'NoneType' object has no attribute 'get'\r\n\r\nDuring handling of the above exception, another exception occurred:\r\n\r\nTraceback (most recent call last):\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/logging/__init__.py\", line 1163, in emit\r\n    stream.write(msg + self.terminator)\r\nValueError: I/O operation on closed file.\r\nCall stack:\r\n  File \"/home/circleci/project/litellm/litellm_core_utils/logging_worker.py\", line 514, in _flush_on_exit\r\n    loop.run_until_complete(task[\"coroutine\"])\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/asyncio/base_events.py\", line 678, in run_until_complete\r\n    self.run_forever()\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/asyncio/base_events.py\", line 645, in run_forever\r\n    self._run_once()\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/asyncio/base_events.py\", line 1999, in _run_once\r\n    handle._run()\r\n  File \"/home/circleci/.pyenv/versions/3.12.13/lib/python3.12/asyncio/events.py\", line 88, in _run\r\n    self._context.run(self._callback, *self._args)\r\n  File \"/home/circleci/project/litellm/litellm_core_utils/litellm_logging.py\", line 2684, in async_success_handler\r\n    should_run = self.should_run_callback(\r\n  File \"/home/circleci/project/litellm/litellm_core_utils/litellm_logging.py\", line 1648, in should_run_callback\r\n    and EnterpriseCallbackControls.is_callback_disabled_dynamically(\r\n  \n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557067",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "failure"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": true
+    },
+    {
+      "check_name": "ci/circleci: e2e_openai_endpoints",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\nuning\r\n4.83s call     tests/openai_endpoints_tests/test_e2e_openai_responses_api.py::test_cancel_invalid_response_id\r\n=========================== short test summary info ============================\r\nFAILED tests/openai_endpoints_tests/test_e2e_openai_responses_api.py::test_anthropic_with_responses_api - openai.BadRequestError: Error code: 400 - {'error': {'message': 'litellm.BadRequestError: AnthropicException - {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaNzckDjuKYWwsKRceTej\"}. Received Model Group=anthropic/claude-sonnet-4-5-20250929\\nAvailable Model Group Fallbacks=None', 'type': None, 'param': None, 'code': '400'}}\r\n============= 1 failed, 18 passed, 2 skipped in 103.56s (0:01:43) ==============\r\n\n\r\nExited with code exit status 1\r\n",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557082",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: local_testing_part2",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\nct/litellm/litellm_core_utils/model_response_utils.py:153: PydanticDeprecatedSince211: Accessing the 'model_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.\r\n    or callable(getattr(choice, attr_name))\r\n\r\ntests/local_testing/test_timeout.py::test_httpx_timeout[False-azure/gpt-4.1-mini-azure]\r\ntests/local_testing/test_timeout.py::test_httpx_timeout[False-gpt-3.5-turbo-openai]\r\ntests/local_testing/test_wandb.py::test_wandb_logging_async\r\n  /home/circleci/project/litellm/litellm_core_utils/logging_worker.py:75: RuntimeWarning: coroutine 'Logging.async_success_handler' was never awaited\r\n    self._queue = None\r\n  Enable tracemalloc to get traceback where the object was allocated.\r\n  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.\r\n\r\ntests/local_testing/test_streaming.py::test_parallel_streaming_requests[claude-4-sonnet-20250514-****]\r\n  /home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/threadexception.py:82: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-19 (sync_test_streaming)\r\n  \r\n  Traceback (most recent call last):\r\n    File \"/home/circleci/project/litellm/llms/anthropic/chat/handler.py\", line 149, in make_sync_call\r\n      response = client.post(\r\n                 ^^^^^^^^^^^^\r\n    File \"/home/circleci/project/litellm/llms/custom_httpx/http_handler.py\", line 1085, in post\r\n  \n...[truncated middle, 88967 chars]\nthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaNzmd67im4kXK8Utspw2\"}'\r\n\t\r\n\tDuring handling of the above exception, another exception occurred:\r\n\t\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/runner.py\", line 341, in from_call\r\n\t    result: TResult | None = func()\r\n\t                             ^^^^^^\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/pytest_retry/retry_plugin.py\", line 238, in <lambda>\r\n\t    call = pytest.CallInfo.from_call(lambda: hook.pytest_runtest_call(item=item), when=\"call\")\r\n\t                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n\tlitellm.exceptions.BadRequestError: litellm.BadRequestError: AnthropicException - b'{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaNzmd67im4kXK8Utspw2\"}'\r\n\r\n=========================== end of test retry report ===========================\r\n\r\n============================= slowest 20 durations =============================\r\n5.16s call     tests/local_testing/test_timeout.py::test_hanging_request_azure\r\n2.77s call     tests/local_testing/test_streaming.py::test_openai_stream_options_call[****-o1]\r\n2.65s call     tests/local_testing/test_streaming.py::test_openai_stream_options_call[False-o1]\r\n2.48s call   \n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557070",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: proxy_pass_through_endpoint_tests",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\ne\": \"None\",\r\n        \"param\": \"None\",\r\n        \"code\": \"400\"\r\n    }\r\n}\r\nLiteLLM Call ID: 6b76f457-cdf3-4814-b392-a914864de632\r\nAttempt 1/2 to check spend logs\r\ntext spend response\r\nSpend response: <ClientResponse(http://0.0.0.0:4000/spend/logs?request_id=6b76f457-cdf3-4814-b392-a914864de632) [200 OK]>\r\n<CIMultiDictProxy('Date': 'Fri, 24 Apr 2026 17:32:28 GMT', 'Server': 'uvicorn', 'Content-Length': '3466', 'Content-Type': 'application/json')>\r\n\r\nSpend data: [{'request_id': '6b76f457-cdf3-4814-b392-a914864de632', 'call_type': 'pass_through_endpoint', 'api_key': 'best-api-key-ever', 'spend': 0.0, 'total_tokens': 0, 'prompt_tokens': 0, 'completion_tokens': 0, 'startTime': '2026-04-24T17:32:14.547000Z', 'endTime': '2026-04-24T17:32:14.547000Z', 'request_duration_ms': 0, 'completionStartTime': '2026-04-24T17:32:14.546000Z', 'model': 'claude-sonnet-4-5-20250929', 'model_id': '', 'model_group': '', 'custom_llm_provider': '', 'api_base': '', 'user': 'best-user-id-ever', 'metadata': {'status': 'failure', 'max_retries': None, 'batch_models': None, 'usage_object': None, 'user_api_key': 'best-api-key-ever', 'cost_breakdown': None, 'attempted_retries': None, 'error_information': {'traceback': 'Traceback (most recent call last):\\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/proxy/pass_through_endpoints/pass_through_endpoints.py\", line 907, in pass_through_request\\n    response.raise_for_status()\\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^\\n  File \"/app/.venv/lib/python3.13/site-packages/ht\n...[truncated middle, 25169 chars]\nould be Anthropic's endpoint\r\n\tassert '' == 'https://api....m/v1/messages'\r\n\t  \r\n\t  - https://api.anthropic.com/v1/messages\r\n\r\n\ttest_anthropic_basic_completion_with_headers failed after 4 attempts!\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/runner.py\", line 341, in from_call\r\n\t    result: TResult | None = func()\r\n\t                             ^^^^^^\r\n\tAssertionError: API base should be Anthropic's endpoint\r\n\tassert '' == 'https://api....m/v1/messages'\r\n\t  \r\n\t  - https://api.anthropic.com/v1/messages\r\n\r\n=========================== end of test retry report ===========================\r\n\r\n============================= slowest 5 durations ==============================\r\n15.17s call     tests/pass_through_tests/test_anthropic_passthrough.py::test_anthropic_basic_completion_with_headers\r\n15.17s call     tests/pass_through_tests/test_anthropic_passthrough.py::test_anthropic_basic_completion_with_headers\r\n15.08s call     tests/pass_through_tests/test_anthropic_passthrough.py::test_anthropic_basic_completion_with_headers\r\n15.08s call     tests/pass_through_tests/test_anthropic_passthrough.py::test_anthropic_basic_completion_with_headers\r\n\r\n(1 durations < 0.005s hidden.  Use -vv to show these durations.)\r\n=========================== short test summary info ============================\r\nFAILED tests/pass_through_tests/test_anthropic_passthrough.py::test_anthropic_basic_completion_with_headers - AssertionError: API base\n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557091",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: build_and_test",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n...[truncated]\n      if status != 200:\r\n>               raise Exception(\r\n                    f\"Request did not return a 200 status code: {status}, response text={response_text}\"\r\n                )\r\nE               Exception: Request did not return a 200 status code: 400, response text={\"error\":{\"message\":\"litellm.BadRequestError: AnthropicException - {\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\\\"},\\\"request_id\\\":\\\"req_011CaNzfCQ9MniaKygX3euJt\\\"}. Received Model Group=anthropic/claude-sonnet-4-5-20250929\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":\"400\"}}\r\n\r\ntests/test_openai_endpoints.py:122: Exception\r\n=============================== warnings summary ===============================\r\ntests/test_callbacks_on_proxy.py:99\r\ntests/test_callbacks_on_proxy.py:99\r\ntests/test_callbacks_on_proxy.py:99\r\ntests/test_callbacks_on_proxy.py:99\r\n  /home/circleci/project/tests/test_callbacks_on_proxy.py:99: PytestUnknownMarkWarning: Unknown pytest.mark.order1 - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html\r\n    @pytest.mark.order1\r\n\r\ntests/test_callbacks_on_proxy.py:147\r\ntests/test_callbacks_on_proxy.py:147\r\ntests/test_callbacks_on_proxy.py:147\r\ntests/test_callbacks_on_proxy.py:147\r\n  /home/circleci/project/tests/test_callbacks_on_proxy.py:147: PytestUnknownMarkWarning: Unknown pytest.mark.order2 - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html\r\n    @pytest.mark.order2\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n------ generated xml file: /home/circleci/project/test-results/junit.xml -------\r\n============================= slowest 5 durations ==============================\r\n124.37s call     tests/test_callbacks_on_proxy.py::test_check_num_callbacks_on_lowest_latency\r\n96.82s call     tests/test_callbacks_on_proxy.py::test_check_num_callbacks\r\n44.51s call     tests/test_models.py::test_add_model_run_health\r\n39.34s call     tests/test_openai_endpoints.py::test_image_generation\r\n27.52s call     tests/test_fallbacks.py::test_chat_completion_with_fallbacks\r\n=========================== short test summary info ============================\r\nFAILED tests/test_openai_endpoints.py::test_proxy_all_models - Exception: Request did not return a 200 status code: 400, response text={\"error\":{\"message\":\"litellm.BadRequestError: AnthropicException - {\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\\\"},\\\"request_id\\\":\\\"req_011CaNzfCQ9MniaKygX3euJt\\\"}. Received Model Group=anthropic/claude-sonnet-4-5-20250929\\nAvailable Model Group Fallbacks=None\",\"type\":null,\n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557085",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    },
+    {
+      "check_name": "ci/circleci: llm_translation_testing",
+      "conclusion": "failure",
+      "summary": "Your tests failed on CircleCI",
+      "failure_excerpt": "--- CircleCI raw log tail ---\n_empty_enum_property failed on attempt 1! Retrying!\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/litellm/llms/anthropic/chat/handler.py\", line 481, in completion\r\n\t    response = client.post(\r\n\t               ^^^^^^^^^^^^\r\n\tlitellm.llms.custom_httpx.http_handler.MaskedHTTPStatusError: Client error '400 Bad Request' for url 'https://api.anthropic.com/v1/messages'\r\n\tFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400\r\n\t\r\n\tDuring handling of the above exception, another exception occurred:\r\n\t\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/litellm/main.py\", line 2870, in completion\r\n\t    response = anthropic_chat_completions.completion(\r\n\t               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n\tlitellm.llms.anthropic.common_utils.AnthropicError: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaP1HstwVNUrmZf7uTvBh\"}\r\n\t\r\n\tDuring handling of the above exception, another exception occurred:\r\n\t\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/runner.py\", line 341, in from_call\r\n\t    result: TResult | None = func()\r\n\t                             ^^^^^^\r\n\tlitellm.exceptions.BadRequestError: litellm.BadRequestError: AnthropicException - {\"type\":\"error\",\"error\":{\"type\":\"invalid_requ\n...[truncated middle, 370904 chars]\nnthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaP1Jxcjd8rFKe9EjHt5T\"}\r\n\t\r\n\tDuring handling of the above exception, another exception occurred:\r\n\t\r\n\tTraceback (most recent call last):\r\n\t  File \"/home/circleci/project/.venv/lib/python3.12/site-packages/_pytest/runner.py\", line 341, in from_call\r\n\t    result: TResult | None = func()\r\n\t                             ^^^^^^\r\n\tlitellm.exceptions.BadRequestError: litellm.BadRequestError: AnthropicException - {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_011CaP1Jxcjd8rFKe9EjHt5T\"}\r\n\r\n=========================== end of test retry report ===========================\r\n\r\n============================= slowest 20 durations =============================\r\n62.59s call     tests/llm_translation/test_openai_o1.py::TestOpenAIO1::test_image_url[https://awsmp-logos.s3.amazonaws.com/seller-xw5kijmvmzasy/c233c9ade2ccb5491072ae232c814942.png-high]\r\n53.41s call     tests/llm_translation/test_bedrock_invoke_tests.py::TestBedrockInvokeClaudeJson::test_basic_tool_calling\r\n47.25s call     tests/llm_translation/test_openai_o1.py::TestOpenAIO1::test_async_pdf_handling_with_file_id\r\n40.68s call     tests/llm_translation/test_openai_o1.py::TestOpenAIO1::test_image_url[https://awsmp-logos.s3.amazonaws.com/seller-xw5kijmvmzasy/c233c9ade2ccb5491072ae232c8\n...[truncated]",
+      "annotations": [],
+      "html_url": "https://circleci.com/gh/BerriAI/litellm/1557092",
+      "other_prs": [
+        {
+          "pr_number": 26460,
+          "pr_title": "feat(proxy): Add cleanup job for expired LiteLLM dashboard session keys",
+          "found": true,
+          "conclusion": "success"
+        },
+        {
+          "pr_number": 26546,
+          "pr_title": "feat(guardrails): add peyeeye PII redaction & rehydration guardrail",
+          "found": false,
+          "conclusion": null
+        },
+        {
+          "pr_number": 26415,
+          "pr_title": "feat(mavvrik): add Mavvrik integration",
+          "found": false,
+          "conclusion": null
+        }
+      ],
+      "is_policy_meta": false,
+      "also_failing_on_other_prs": false
+    }
+  ],
+  "diff_files": [
+    {
+      "filename": "litellm/_redis_credential_provider.py",
+      "status": "modified",
+      "additions": 57,
+      "deletions": 7,
+      "patch": "@@ -1,8 +1,19 @@\n import asyncio\n-from typing import Tuple\n+import threading\n+import time\n+from typing import Dict, Tuple\n \n from redis.credentials import CredentialProvider  # type: ignore[attr-defined]\n \n+# GCP IAM tokens are valid for 1 hour. Cache for 55 minutes to refresh before expiry.\n+_GCP_IAM_TOKEN_TTL_SECONDS = 3300\n+\n+# Module-level cache shared across all GCPIAMCredentialProvider instances for the\n+# same service account, so multiple Redis connections on the same pod share one token.\n+# Keyed by service_account \u2192 (token, expiry_monotonic_timestamp).\n+_token_cache: Dict[str, Tuple[str, float]] = {}\n+_token_cache_lock = threading.Lock()\n+\n \n def _generate_gcp_iam_access_token(service_account: str) -> str:\n     \"\"\"\n@@ -31,23 +42,62 @@ def _generate_gcp_iam_access_token(service_account: str) -> str:\n     return str(response.access_token)\n \n \n+def _get_cached_gcp_iam_token(service_account: str) -> str:\n+    \"\"\"\n+    Return a cached GCP IAM token, refreshing only when expired.\n+\n+    Uses a module-level cache shared across all GCPIAMCredentialProvider\n+    instances for the same service account. The threading.Lock ensures only\n+    one thread performs the network round-trip on expiry; all others wait\n+    briefly and read the fresh token (double-checked locking pattern).\n+\n+    This avoids N concurrent blocking IAM refreshes when N Redis connections\n+    are established simultaneously (e.g. during health checks or pool warm-up),\n+    which would otherwise serialise inside Python's async event loop and cause\n+    cascading request latency.\n+    \"\"\"\n+    cached = _token_cache.get(service_account)\n+    if cached is not None:\n+        token, expiry = cached\n+        if time.monotonic() < expiry:\n+            return token\n+\n+    with _token_cache_lock:\n+        # Re-check inside the lock: another thread may have refreshed already.\n+        cached = _token_cache.get(service_account)\n+        if cached is not None:\n+            token, expiry = cached\n+            if \n...[truncated]"
+    },
+    {
+      "filename": "tests/test_litellm/test_redis.py",
+      "status": "modified",
+      "additions": 76,
+      "deletions": 9,
+      "patch": "@@ -13,7 +13,18 @@\n     get_redis_connection_pool,\n     get_redis_url_from_environment,\n )\n-from litellm._redis_credential_provider import GCPIAMCredentialProvider\n+from litellm._redis_credential_provider import (\n+    GCPIAMCredentialProvider,\n+    _token_cache,\n+)\n+\n+\n+@pytest.fixture(autouse=True)\n+def clear_gcp_iam_token_cache():\n+    \"\"\"Reset the module-level GCP IAM token cache between tests.\"\"\"\n+    _token_cache.clear()\n+    yield\n+    _token_cache.clear()\n \n \n def test_get_redis_url_from_environment_single_url(monkeypatch):\n@@ -202,7 +213,7 @@ def test_get_redis_async_client_without_connection_pool():\n \n \n def test_gcp_iam_credential_provider_get_credentials():\n-    \"\"\"GCPIAMCredentialProvider.get_credentials() returns a fresh token tuple on every call.\"\"\"\n+    \"\"\"GCPIAMCredentialProvider.get_credentials() returns a token tuple.\"\"\"\n     service_account = \"projects/-/serviceAccounts/test@project.iam.gserviceaccount.com\"\n \n     with patch(\n@@ -216,20 +227,76 @@ def test_gcp_iam_credential_provider_get_credentials():\n     mock_gen.assert_called_once_with(service_account)\n \n \n-def test_gcp_iam_credential_provider_regenerates_token_on_each_call():\n-    \"\"\"Each call to get_credentials() generates a new token (no caching).\"\"\"\n+def test_gcp_iam_credential_provider_caches_token():\n+    \"\"\"\n+    Repeated calls to get_credentials() reuse the cached token and only call\n+    _generate_gcp_iam_access_token once, avoiding redundant blocking I/O.\n+    \"\"\"\n     service_account = \"projects/-/serviceAccounts/test@project.iam.gserviceaccount.com\"\n-    tokens = [\"tok-1\", \"tok-2\", \"tok-3\"]\n \n     with patch(\n         \"litellm._redis_credential_provider._generate_gcp_iam_access_token\",\n-        side_effect=tokens,\n+        return_value=\"tok-cached\",\n     ) as mock_gen:\n         provider = GCPIAMCredentialProvider(service_account)\n-        results = [provider.get_credentials() for _ in range(3)]\n+        results = [provider.get_credentials() for _ in range(5)]\n+\n+    assert all(r =\n...[truncated]"
+    }
+  ],
+  "other_pr_numbers": [
+    26460,
+    26546,
+    26415
+  ],
+  "greptile_score": 5,
+  "has_circleci_checks": true,
+  "mergeable": true,
+  "mergeable_state": "blocked"
+}

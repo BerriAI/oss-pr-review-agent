@@ -1,0 +1,38 @@
+{
+  "linked_issue": "BerriAI/litellm#26586",
+  "fix_shapes": [
+    "new_code_path",
+    "param_filter_or_allowlist"
+  ],
+  "merge_gate": {
+    "safe_for_high_rps_gateway": "conditional",
+    "one_liner": "Audio-transcription fix is correct and wired; streaming chat fix is dead code \u2014 OVHCloudChatCompletionStreamingHandler is never instantiated in production, so tests pass but the normalization does not run on live traffic.",
+    "unintended_consequences": [
+      "After 2026-05-11 (OVHCloud deadline), ovhcloud streaming reasoning models silently return chunks where reasoning_content is absent \u2014 the PR's normalization class never executes because OVHCloudChatConfig does not override get_model_response_iterator; OpenAIChatCompletionStreamingHandler runs instead.",
+      "OpenAIChatCompletionStreamingHandler._map_reasoning_to_reasoning_content unconditionally pops 'reasoning' and overwrites 'reasoning_content', whereas OVHCloud's handler preserves existing reasoning_content when both fields coexist during the transition window \u2014 behavioral divergence the PR claims is handled correctly but is not tested on the production code path."
+    ],
+    "hot_path_notes": [
+      "OVHCloud is a narrow provider path, not a hot path at 10k+ RPS; blast radius is limited to ovhcloud streaming reasoning requests only."
+    ],
+    "what_would_make_yes": "Add get_model_response_iterator override in OVHCloudChatConfig that returns OVHCloudChatCompletionStreamingHandler; update at least one test to call OVHCloudChatConfig.get_model_response_iterator() to prove the handler is wired, not just directly instantiated. Alternatively, drop the dead class, document that OpenAIChatCompletionStreamingHandler already covers the migration, and add a test exercising the real production path."
+  },
+  "findings": [
+    {
+      "regression_archetype": "dead_code_misleading_tests",
+      "bug_class": "streaming reasoning normalization unreachable in production",
+      "fix_locus": "litellm/llms/ovhcloud/chat/transformation.py:OVHCloudChatCompletionStreamingHandler",
+      "sibling_loci": [
+        "litellm/llms/openai/chat/gpt_transformation.py:771-781",
+        "litellm/llms/openai/chat/gpt_transformation.py:784-820"
+      ],
+      "evidence": [
+        "litellm/llms/ovhcloud/chat/transformation.py:78-128 \u2014 OVHCloudChatCompletionStreamingHandler defined but no get_model_response_iterator override in OVHCloudChatConfig to select it",
+        "litellm/llms/openai/chat/gpt_transformation.py:771-781 \u2014 OpenAIGPTConfig.get_model_response_iterator returns OpenAIChatCompletionStreamingHandler; OVHCloudChatConfig inherits this without override \u2014 verified by grep showing zero matches for get_model_response_iterator in litellm/llms/ovhcloud/",
+        "litellm/llms/openai/chat/gpt_transformation.py:784-820 \u2014 OpenAIChatCompletionStreamingHandler._map_reasoning_to_reasoning_content already maps reasoning\u2192reasoning_content via pop, so production behavior is partially correct but with different semantics (unconditional overwrite vs preserve-existing)",
+        "tests/test_litellm/llms/ovhcloud/test_ovhcloud_chat_transformation.py:297-367 \u2014 all three migration tests directly instantiate OVHCloudChatCompletionStreamingHandler, not through OVHCloudChatConfig.get_model_response_iterator; production code path is untested"
+      ],
+      "breadth": "dead_code_unreachable",
+      "recommended_fix": "Override get_model_response_iterator in OVHCloudChatConfig (litellm/llms/ovhcloud/chat/transformation.py) to return OVHCloudChatCompletionStreamingHandler. Add a test that calls config.get_model_response_iterator() with a real streaming_response to prove wiring. Without this, the 2026-05-11 deadline passes, reasoning_content is absent from ovhcloud responses, and no code in the production path corrects it \u2014 relying on OpenAIChatCompletionStreamingHandler's existing pop behavior which differs from the PR's stated semantics."
+    }
+  ]
+}

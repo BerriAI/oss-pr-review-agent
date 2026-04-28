@@ -7,11 +7,16 @@ import secrets
 import subprocess
 import time
 import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
 import httpx
 import logfire
+
+import db
+import karpathy_check
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -125,6 +130,26 @@ the TriageReport schema with these fields:
   These are NEVER in pr_related_failures or unrelated_failures — separate
   bucket. The rubric ignores them; surface them so the contributor knows
   to fix (rebase, sign CLA, etc.) but not as a merge-confidence penalty.
+- failure_rationales: dict keyed by check_name, value is one short sentence
+  (≤180 chars, {_PROSE_RULE}) explaining WHY that check landed in its
+  bucket. Required for every name in pr_related_failures, unrelated_failures,
+  and policy_meta_failures — the drilldown shows it next to the check name
+  so the reviewer can audit the classification without clicking through to
+  GitHub. Ground each rationale in the gathered data:
+    - PR-related: cite a file/symbol from `failure_excerpt` or `annotations`
+      that overlaps `diff_files` (e.g. "Annotation points at
+      litellm/proxy/auth.py which is in this diff."). For the
+      uninformative-log path, say so explicitly (e.g. "No log hint, but
+      check passes on every sampled neighbor PR — failing only here.").
+    - unrelated: cite the infra/cross-PR signal (e.g. "Same check failing
+      on PRs #26385 and #26011 — broken-for-everyone infra." or "Log shows
+      a docker pull rate-limit, no overlap with diff files.").
+    - policy_meta: name the policy (e.g. "DCO sign-off missing on the most
+      recent commit." or "PR opened from main; repo policy requires a
+      feature branch.").
+  Use ONLY signals visible in the gathered data — never speculate. If the
+  data is too thin to ground a rationale, return the empty string for that
+  key (the drilldown will skip the explanation rather than fabricate one).
 - running_checks: in_progress_checks verbatim.
 - greptile_score: the int from the gathered data, or null.
 - has_circleci_checks: bool from the gathered data.
@@ -133,6 +158,45 @@ the TriageReport schema with these fields:
   `mergeable` == true AND `mergeable_state` is one of "clean"/"unstable"/
   "has_hooks". Set to null iff `mergeable` is null (GitHub still computing) or
   `mergeable_state` is "unknown" — never guess.
+- scope_drift: bool. Set per SKILL.md Step 6 by comparing `diff_files` against
+  every entry in `linked_issues`. Set true when:
+    (a) the diff touches files/concerns the linked issue's title+body does
+        NOT mention AND the diff is materially broader than the issue
+        describes (over-reach), OR
+    (b) the diff is narrower than the linked issue's stated bug class —
+        e.g. issue title says "non-chat endpoints" plural but diff only
+        fixes one mode (under-reach / narrow guard).
+  Set false when `linked_issues` is empty (intent unverified, but no drift
+  to flag — the missing-issue note goes in the verdict prose, not here),
+  or when the diff matches the issue's scope.
+- scope_drift_reason: ONE sentence (≤280 chars, {_PROSE_RULE}) citing the
+  specific linked-issue field (title or body excerpt) that conflicts with
+  the diff. REQUIRED when scope_drift is true, validator rejects the empty
+  string. Empty string when scope_drift is false. Quote the issue text
+  verbatim where you can — the reviewer audits this.
+- prior_signals: list of {{source, excerpt, severity, status, reason}} per
+  SKILL.md Step 5.5. One entry per `pr_review_comments` entry, plus ONE
+  entry for the Greptile body when `greptile_review_body` is non-empty
+  (treat the body as a single signal even if it makes multiple sub-points
+  — break it apart only if the body explicitly enumerates separate
+  numbered items). Fields:
+    - source: "greptile" for the Greptile body, or the comment author's
+      login verbatim (copy from `pr_review_comments[*].author`).
+    - excerpt: ≤200 chars, the exact phrase the comment turns on. Quote
+      verbatim from the gather data — never paraphrase.
+    - severity: "nit" | "concern" | "blocker" per Step 5.5 rules. The
+      keyword guardrail is mandatory: comment text containing "breaks",
+      "fails", "wrong", "users", "production", "data loss", "security",
+      "regression", "404", "500", "crash", or "silently" CANNOT be
+      classified as "nit".
+    - status: "agreed" | "resolved" | "disagreed" | "out_of_scope".
+    - reason: REQUIRED when status is "disagreed" or "out_of_scope".
+      Empty when status is "agreed" or "resolved". Validator rejects
+      dismissals without justification — the rubric treats those as
+      "agreed".
+  Empty list when both `greptile_review_body` is empty AND
+  `pr_review_comments` is empty. The rubric handles the empty case
+  (no penalty fires).
 
 Worked example (illustrative shape only — your values come from the gather
 output, not from this template):
@@ -148,10 +212,33 @@ output, not from this template):
   "unrelated_failures": ["lint", "codecov/patch"],
   "unrelated_failures_also_failing_elsewhere": ["lint"],
   "policy_meta_failures": [],
+  "failure_rationales": {{
+    "code-quality": "Annotation flags an unused import in litellm/llms/openai/streaming_handler.py which this PR edits.",
+    "lint": "Same lint suite is failing on PRs #26385 and #26011 — broken-for-everyone infra.",
+    "codecov/patch": "PR adds zero testable production lines (guard-only patch); codecov/patch fails by definition here."
+  }},
   "running_checks": [],
   "greptile_score": 4,
   "has_circleci_checks": true,
-  "has_merge_conflicts": false
+  "has_merge_conflicts": false,
+  "scope_drift": true,
+  "scope_drift_reason": "Linked issue #26406 title says 'non-chat endpoints' (plural — embedding/audio/video/rerank); diff only guards image_generation, leaving the other modes unfixed.",
+  "prior_signals": [
+    {{
+      "source": "greptile",
+      "excerpt": "Confidence Score: 4/5 — fix is correct and well-tested; only image_generation is guarded.",
+      "severity": "concern",
+      "status": "agreed",
+      "reason": ""
+    }},
+    {{
+      "source": "krrish-berri-2",
+      "excerpt": "this feels like a much broader fix for the issue, instead of just filtering access groups",
+      "severity": "concern",
+      "status": "agreed",
+      "reason": ""
+    }}
+  ]
 }}
 
 Do not include any prose justification, summary, or details — Python composes
@@ -301,6 +388,58 @@ def _no_markdown_bold(v: str) -> str:
     return v
 
 
+class PriorSignal(BaseModel):
+    """One reconciled prior signal — a Greptile review point or a human PR
+    comment, classified by severity (what kind of concern) and status
+    (whether the diff resolved it). Powers the prior-signals reconciliation
+    rubric row that prevents the agent from silently overriding existing
+    skepticism. See SKILL.md Step 5.5 for classification rules.
+
+    Both fields are deliberately three-tier (not boolean): a single hard
+    flag would conflate style nits with production-down concerns. A
+    reviewer asking "did you handle X?" (concern) carries different
+    weight than "this masks failures" (blocker), and the rubric needs to
+    dock differently for each.
+    """
+
+    # `greptile` for the bundled Greptile review body, or the comment
+    # author's GitHub login verbatim. Free string because the gather
+    # script doesn't constrain login format.
+    source: str
+    # ≤200 chars to keep the drilldown readable. The agent must quote
+    # from the gather data — not paraphrase — so reviewers can audit.
+    excerpt: str = Field(..., max_length=200)
+    # `nit` = cosmetic, zero penalty. `concern` = "did you handle X?",
+    # weight 1 if unresolved. `blocker` = production-impact-class,
+    # weight 2 if unresolved. Keyword guardrail in SKILL.md Step 5.5
+    # prevents downgrading real-risk language ("breaks", "users",
+    # "production", etc.) to nit.
+    severity: Literal["nit", "concern", "blocker"]
+    # `agreed` and `disagreed`-without-reason are the only states that
+    # dock the rubric. `resolved` (diff already fixed) and
+    # `out_of_scope` (with reason) are zero-penalty.
+    status: Literal["agreed", "resolved", "disagreed", "out_of_scope"]
+    # Required when status is `disagreed` or `out_of_scope`; empty for
+    # `agreed` / `resolved`. The validator (below) enforces this so the
+    # model can't dismiss a comment without justifying.
+    reason: str = Field(default="", max_length=240)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_required_for_dismissal(cls, v: str, info) -> str:
+        # Pydantic v2 validator: `info.data` carries already-validated
+        # earlier fields. We only check status (severity is independent).
+        status = info.data.get("status")
+        if status in ("disagreed", "out_of_scope") and not v.strip():
+            raise ValueError(
+                f"reason is required when status={status!r} — "
+                f"a dismissal without justification is treated as 'agreed' "
+                f"by the rubric. Provide a one-sentence reason or change "
+                f"the status."
+            )
+        return v
+
+
 class TriageReport(BaseModel):
     """Structured CI/policy signals for one PR. Filled by the triage agent."""
 
@@ -325,12 +464,10 @@ class TriageReport(BaseModel):
     # Subset of unrelated_failures that were ALSO failing on at least one of
     # the sampled `other_prs` (gather script's `failing_check_contexts[*].
     # other_prs` field). Distinguishes "infra flake breaking everyone" from
-    # "infra-shaped failure unique to this PR". Drives the rubric so the
-    # latter still docks 1 (silent-pass canary stays armed) while the former
-    # only docks 0 — the bug we hit on PRs #26385 / #26011 / #26122 where
-    # the agent flipped to BLOCKED on infra noise the reviewer shrugged off.
-    # Names here MUST also appear in unrelated_failures (subset relationship);
-    # the rubric assumes that and won't fire double-penalties.
+    # "infra-shaped failure unique to this PR". Used only by
+    # `_compose_justification` to split the prose into two informational
+    # sentences — neither bucket docks the score (see _RUBRIC note).
+    # Names here MUST also appear in unrelated_failures (subset relationship).
     unrelated_failures_also_failing_elsewhere: list[str] = Field(default_factory=list)
     # Policy/meta checks (e.g. `Verify PR source branch`, `DCO`, `cla-bot`)
     # that operate on PR shape, not code. Pre-flagged by the gather script
@@ -343,6 +480,16 @@ class TriageReport(BaseModel):
     # Recovered #26419 from the 2026-04-25 eval where a UI dropdown PR got
     # 4/5 BLOCKED because `Verify PR source branch` failed.
     policy_meta_failures: list[str] = Field(default_factory=list)
+    # Per-failure "why this check is in its bucket" sentence, keyed by check
+    # name. Populated for entries in pr_related_failures / unrelated_failures
+    # / policy_meta_failures so render_drilldown can show the reasoning on
+    # each bullet — used to be dropped on the floor (the SKILL Step 2 asks
+    # for a per-check rationale, but TRIAGE_OUTPUT_OVERRIDE only retained the
+    # check name). Empty dict = older caller / fallback path; the drilldown
+    # falls back to bare check names in that case so nothing breaks.
+    # Keyed by check name (not index) so the model can't misalign rationale
+    # to check by reordering. Missing keys render bare; extra keys are ignored.
+    failure_rationales: dict[str, str] = Field(default_factory=dict)
     running_checks: list[str] = Field(default_factory=list)
     greptile_score: int | None = None
     has_circleci_checks: bool
@@ -352,8 +499,55 @@ class TriageReport(BaseModel):
     # punish the PR for GitHub's lazy compute). Defaults to None so the
     # fallback card path and older callers don't have to populate it.
     has_merge_conflicts: bool | None = None
+    # Scope-drift signal: the diff addresses concerns the linked issue does
+    # NOT mention (over-reach), or the diff is narrower than the linked
+    # issue's bug class (under-reach, e.g. issue says "non-chat endpoints"
+    # but diff fixes only image_generation). Set per SKILL.md Step 6 by
+    # comparing diff_files to linked_issues. Defaulted to False so older
+    # gather payloads (without linked_issues) and the fallback-card path
+    # don't trip the rubric. Reason is one sentence citing the issue
+    # field that conflicts with the diff — REQUIRED when scope_drift is
+    # True, validator below enforces that.
+    scope_drift: bool = False
+    scope_drift_reason: str = Field(default="", max_length=300)
+    # Prior signals reconciled per SKILL.md Step 5.5 — one entry per
+    # Greptile review body and per human PR review comment. The rubric
+    # docks based on severity tier (nit=0, concern=1, blocker=2) but
+    # only for entries with status `agreed` (or `disagreed` without a
+    # concrete reason — the PriorSignal validator already rejects the
+    # latter shape). Empty list when the PR has no Greptile review and
+    # no human comments. Defaulted to empty so older callers / fallback
+    # paths degrade to "no penalty" cleanly.
+    prior_signals: list[PriorSignal] = Field(default_factory=list)
 
     _strip_bold = field_validator("pr_summary")(_no_markdown_bold)
+
+    @field_validator("scope_drift_reason")
+    @classmethod
+    def _reason_required_when_drifting(cls, v: str, info) -> str:
+        # Mirror of the PriorSignal.reason validator: drift without a
+        # reason gives the reviewer nothing to act on, so we force the
+        # model to either provide one or set scope_drift=False. Keeps
+        # the card audit-trail honest.
+        if info.data.get("scope_drift") is True and not v.strip():
+            raise ValueError(
+                "scope_drift_reason is required when scope_drift=True. "
+                "Cite the linked-issue field (title/body) that the diff "
+                "diverges from in one sentence."
+            )
+        return v
+
+    @field_validator("failure_rationales")
+    @classmethod
+    def _rationales_no_markdown(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, text in v.items():
+            if not text:
+                continue
+            try:
+                _no_markdown_bold(text)
+            except ValueError as e:
+                raise ValueError(f"failure_rationales[{name!r}]: {e}") from e
+        return v
 
 
 class PatternFinding(BaseModel):
@@ -454,15 +648,28 @@ def _is_wide_low_density_fanout(t: TriageReport) -> bool:
     return (total / t.files_changed) < _WIDE_FANOUT_LINES_PER_FILE
 
 
+def _unresolved_priors(t: TriageReport, severity: str) -> list[PriorSignal]:
+    """Prior signals at the given severity tier that the diff hasn't
+    resolved. Used by the rubric to dock per tier (concern → 1,
+    blocker → 2; nit is always weight 0 and never queried).
+
+    "Unresolved" = status `agreed`. The PriorSignal validator already
+    rejects `disagreed`/`out_of_scope` without a reason, so by the time
+    a signal reaches the rubric, those statuses ARE justified — and a
+    justified dismissal shouldn't dock the score.
+    """
+    return [
+        s for s in t.prior_signals
+        if s.severity == severity and s.status == "agreed"
+    ]
+
+
 def _unrelated_unique_to_pr(t: TriageReport) -> list[str]:
     """Unrelated failures that are NOT also red on the sampled other_prs.
 
-    These are the only unrelated failures that should dock the score:
-    a check failing here AND on neighboring PRs is infra/repo-wide noise
-    the contributor can't fix; docking for it is just punishing them for
-    being downstream of someone else's outage. A check failing only here
-    is suspicious — bucketed unrelated by the model but maybe wrongly,
-    so the silent-pass canary still needs to fire.
+    Used only by `_compose_justification` to split the prose into two
+    informational sentences ("worth a glance" vs. "infra-wide noise, no
+    penalty"). Neither bucket docks the score — see the note in `_RUBRIC`.
 
     Order-preserving so the user-facing list keeps the model's ordering.
     """
@@ -519,6 +726,57 @@ _RUBRIC: list[_RubricRow] = [
         lambda t, p: f"{_plural(_count_risk(p, 'medium'), 'medium-risk pattern finding')} "
         f"({_join([f.file for f in p.findings if f.risk == 'medium'])})",
     ),
+    # Scope drift vs linked issue. Diff addresses concerns the issue
+    # doesn't mention (over-reach), or diff is narrower than the issue's
+    # stated bug class (under-reach / narrow guard). Weight 2 = same as a
+    # PR-related CI failure: the diff and the stated intent disagree, so
+    # the reviewer needs to either widen the fix or amend the issue.
+    # Eval lesson from BerriAI/litellm PRs #26417 (issue #26406 says
+    # "non-chat endpoints" — diff fixes only image_generation) and
+    # #25613 (issue #25550 describes access-group leak — diff also adds
+    # fine-tune-id resolution and rewrites the OpenAI fallback path).
+    # Both got 5/5 READY in production because the previous rubric never
+    # compared the diff against the linked issue.
+    (
+        2,
+        lambda t, p: t.scope_drift,
+        lambda t, p: (
+            f"scope drift vs linked issue "
+            f"({t.scope_drift_reason or 'see card'})"
+        ),
+    ),
+    # Unresolved prior-reviewer concerns at the BLOCKER tier — Greptile
+    # or a human reviewer flagged a production-impact-class concern
+    # ("masks failures", "breaks for users", "data loss", etc.) and the
+    # diff has not addressed it. Weight 2 = mirrors the pattern-blocker
+    # row: an unaddressed reviewer blocker is exactly as load-bearing as
+    # an unaddressed pattern-doc blocker. Both classes mean a known
+    # high-impact concern is unresolved and the agent must surface it.
+    (
+        2,
+        lambda t, p: bool(_unresolved_priors(t, "blocker")),
+        lambda t, p: (
+            f"{_plural(len(_unresolved_priors(t, 'blocker')), 'unresolved reviewer blocker')} "
+            f"({_join([s.source for s in _unresolved_priors(t, 'blocker')])})"
+        ),
+    ),
+    # Unresolved prior-reviewer concerns at the CONCERN tier — Greptile
+    # or a human reviewer raised a "did you handle X?" / "what about Y
+    # mode?" question and the diff hasn't addressed it. Weight 1 caps
+    # the score at 4/5 so READY can't ship over an open question, but
+    # leaves room for cleanly-corroborated PRs to still land at 4/5.
+    # Nit-tier signals deliberately don't have a rubric row (weight 0):
+    # surfacing them on the card is enough; docking for them would
+    # punish PRs for cosmetic comments the contributor can address in
+    # a follow-up.
+    (
+        1,
+        lambda t, p: bool(_unresolved_priors(t, "concern")),
+        lambda t, p: (
+            f"{_plural(len(_unresolved_priors(t, 'concern')), 'unresolved reviewer concern')} "
+            f"({_join([s.source for s in _unresolved_priors(t, 'concern')])})"
+        ),
+    ),
     # Wide low-density fan-out. Catches the brittle-helper-everywhere shape
     # where a patch touches many files but barely changes any of them — the
     # exact pattern the human grader called out as "if someone adds a new
@@ -545,29 +803,22 @@ _RUBRIC: list[_RubricRow] = [
         lambda t, p: t.greptile_score is None,
         lambda t, p: "Greptile has not reviewed this PR yet",
     ),
-    # Soft-dock for unrelated failures UNIQUE TO THIS PR so a READY card
-    # never silently swallows a red check the model can't explain by
-    # pointing at neighboring PRs. PR #26451 of BerriAI/litellm shipped
-    # a 5/5 READY card while `code-quality` was failing because the model
-    # bucketed it as unrelated (null log + annotations only mentioned
-    # `.github`) and the rubric had no row for that bucket.
+    # Note: unrelated failures are intentionally NOT a penalty. The model's
+    # job is to bucket them; the rubric's job is to score the diff. Docking
+    # for failures the contributor didn't cause just punishes them for being
+    # downstream of someone else's outage — even when the failure happens to
+    # be unique to this PR, an "unrelated" classification means the model
+    # didn't find a diff link, and the right response is to surface the check
+    # name (failing_line + drilldown + justification all do this) and let the
+    # reviewer eyeball it, not to flip BLOCKED.
     #
-    # Weight 1 because the model might still be right (real infra flake),
-    # so the verdict drops to BLOCKED but not as hard as a confirmed
-    # PR-related failure. Either way the failure name lands in the
-    # justification + the card's failing_line.
+    # Removed the previous "unique-to-this-PR docks 1" row that was firing
+    # on PRs like BerriAI/litellm #26385 / #26011 / #26122 where a one-line
+    # bump got 4/5 BLOCKED for a CircleCI suite the human grader read as
+    # noise. The silent-pass canary (PR #26451: code-quality failed, card
+    # said 5/5 READY with no mention) is still covered by the failing_line
+    # row at the top of the card — the user always sees the red checks.
     #
-    # Filtered through `_unrelated_unique_to_pr` so a failure ALSO red on
-    # sampled other_prs (clearly broken-for-everyone infra) does NOT dock
-    # — fixed the false-BLOCKED on PRs #26385 / #26011 / #26122 from the
-    # 2026-04-25 eval, where one-line bumps got 4/5 BLOCKED for cross-repo
-    # `lint` / `codecov` flakes the human grader correctly read as noise.
-    (
-        1,
-        lambda t, p: bool(_unrelated_unique_to_pr(t)),
-        lambda t, p: f"{_plural(len(_unrelated_unique_to_pr(t)), 'unrelated CI failure')} "
-        f"unique to this PR ({_join(_unrelated_unique_to_pr(t))})",
-    ),
     # Note: missing CircleCI is intentionally NOT a penalty. OSS PRs from
     # external contributors often can't trigger CircleCI (it's gated on repo
     # secrets), so docking them would punish the contributor for a config
@@ -582,6 +833,7 @@ def _compose_one_liner(
     penalties: list[str],
     triage: TriageReport,
     pattern: PatternReport,
+    karpathy: karpathy_check.KarpathyReview | None = None,
 ) -> str:
     if verdict == "WAITING":
         n = len(triage.running_checks)
@@ -598,6 +850,15 @@ def _compose_one_liner(
     blocker_n = _count(pattern, "blocker")
     if blocker_n:
         return f"{_plural(blocker_n, 'pattern blocker')} need fixes first."
+    # Unresolved reviewer blockers come next — Greptile or a human flagged
+    # a production-impact-class concern that this PR hasn't addressed.
+    # Mirrors the pattern-blocker priority and reads naturally on the card.
+    blocker_priors = _unresolved_priors(triage, "blocker")
+    if blocker_priors:
+        return (
+            f"{_plural(len(blocker_priors), 'unresolved reviewer blocker')} "
+            f"need a response first."
+        )
     # High-risk findings come next in the priority chain because they signal
     # production-impact pattern smells (gated public-route imports, silent
     # error suppression, etc.) — louder than a vanilla soft penalty even
@@ -605,6 +866,28 @@ def _compose_one_liner(
     high_risk_n = _count_risk(pattern, "high")
     if high_risk_n:
         return f"{_plural(high_risk_n, 'high-risk pattern finding')} need a closer look first."
+    # Karpathy dock surfaces above scope_drift / soft penalties because the
+    # senior-eng stage only runs on otherwise-clean PRs — when it fires it
+    # IS the headline reason the verdict flipped.
+    if karpathy is not None:
+        gate = karpathy.merge_gate.safe_for_high_rps_gateway
+        if gate in ("no", "conditional"):
+            one_liner = (karpathy.merge_gate.one_liner or "").strip().rstrip(".")
+            if one_liner:
+                return f"{one_liner}."
+            return (
+                "Karpathy hold — staff-eng review flagged production risk."
+                if gate == "no"
+                else "Karpathy conditional — see merge gate for what's needed."
+            )
+    # Scope drift surfaces above generic soft penalties because it tells
+    # the reviewer something specific to act on (widen the fix or amend
+    # the issue), where a Greptile<4 or wide-fanout dock is more diffuse.
+    if triage.scope_drift:
+        # Trim a trailing period so we don't get "...modes.." when the
+        # model-supplied reason already terminates with a period.
+        reason = (triage.scope_drift_reason or "see card").rstrip(".")
+        return f"Scope drift vs linked issue — {reason}."
     # Only soft penalties left → name the top one verbatim.
     return penalties[0][:1].upper() + penalties[0][1:] + "."
 
@@ -627,26 +910,44 @@ def _compose_justification(
             + ", ".join(bits)
             + ". Score will update once checks complete."
         )
+    # Two informational sentences for the two unrelated buckets. Neither
+    # docks the score (rubric weight 0); both exist so the reviewer sees
+    # WHY each bucket is non-blocking. Shared between READY and BLOCKED
+    # paths because either verdict can co-occur with unrelated failures.
+    unrelated_sentences: list[str] = []
+    unique = _unrelated_unique_to_pr(triage)
+    if unique:
+        unrelated_sentences.append(
+            f"{_plural(len(unique), 'unrelated CI failure')} unique to this PR "
+            f"({_join(unique)}) — not related to this diff but worth a glance."
+        )
+    if triage.unrelated_failures_also_failing_elsewhere:
+        unrelated_sentences.append(
+            f"{_plural(len(triage.unrelated_failures_also_failing_elsewhere), 'check')} "
+            f"also red on neighboring PRs "
+            f"({_join(triage.unrelated_failures_also_failing_elsewhere)}) "
+            f"— infra-wide noise, no penalty."
+        )
+
     if verdict == "READY":
         ci_note = (
             "CircleCI passed"
             if triage.has_circleci_checks
             else "no CircleCI runs (OSS-typical)"
         )
-        # Even a READY card must name any failing checks the model bucketed as
-        # unrelated, otherwise the user reads "All checks green" while the PR
-        # has a red ❌ in GitHub. After the unique-vs-elsewhere split, READY
-        # implies every unrelated failure was ALSO red on neighboring PRs
-        # (otherwise the unique-only rubric row would have docked → BLOCKED),
-        # so the prose can call that out honestly instead of just "verify".
+        # Even a READY card must name any failing checks the model bucketed
+        # as unrelated, otherwise the user reads "All checks green" while
+        # the PR has a red ❌ in GitHub. PR #26451 of BerriAI/litellm is
+        # the canonical silent-pass case the failing_line + this prose both
+        # exist to prevent.
         if triage.unrelated_failures:
-            return (
+            head = (
                 f"Greptile {triage.greptile_score}/5, "
                 f"no blocking pattern findings, {ci_note}. "
                 f"{_plural(len(triage.unrelated_failures), 'check')} failing "
-                f"but also red on neighboring PRs (broken-for-everyone infra): "
-                f"{_join(triage.unrelated_failures)}."
+                f"but unrelated to this diff: {_join(triage.unrelated_failures)}."
             )
+            return " ".join([head, *unrelated_sentences])
         return (
             f"All checks green. Greptile {triage.greptile_score}/5, "
             f"no blocking pattern findings, {ci_note}."
@@ -654,23 +955,7 @@ def _compose_justification(
     sentences: list[str] = []
     if penalties:
         sentences.append("Score docked for: " + "; ".join(penalties) + ".")
-    # Two separate sentences for the two unrelated buckets. The unique-to-PR
-    # subset is what the rubric just docked (already in penalties); call it
-    # out by name. The "also failing elsewhere" subset is non-docking — say
-    # so explicitly so the reviewer knows we saw it and chose not to penalize.
-    unique = _unrelated_unique_to_pr(triage)
-    if unique:
-        sentences.append(
-            f"{_plural(len(unique), 'unrelated CI failure')} unique to this PR "
-            f"({_join(unique)}) — not related to this diff but worth a glance."
-        )
-    if triage.unrelated_failures_also_failing_elsewhere:
-        sentences.append(
-            f"{_plural(len(triage.unrelated_failures_also_failing_elsewhere), 'check')} "
-            f"also red on neighboring PRs "
-            f"({_join(triage.unrelated_failures_also_failing_elsewhere)}) "
-            f"— infra-wide noise, no penalty."
-        )
+    sentences.extend(unrelated_sentences)
     nits = _count(pattern, "nit")
     sugg = _count(pattern, "suggestion")
     extras = []
@@ -731,11 +1016,74 @@ def _format_failing_line(triage: TriageReport) -> str:
     return " · ".join(parts)
 
 
-def fuse(triage: TriageReport, pattern: PatternReport) -> TriageCard:
-    """Combine the two agent outputs into the single card the user sees.
+def _failure_bullet(check_name: str, rationale: str) -> str:
+    """One drilldown bullet for a failing check. Adds the model's rationale
+    after the name when present, falls back to the bare name otherwise.
 
-    Pure function. No I/O. Deterministic given (triage, pattern). Tested in
-    tests/test_fuse.py.
+    Why a helper: PR-related and unrelated buckets share the exact same
+    rendering (only the section header differs), and we want both to fall
+    back to the bare name on missing rationale identically — the alternative
+    is duplicating the if/else inline at two callsites and inevitably
+    drifting them.
+    """
+    if rationale:
+        return f"  • {check_name} — {rationale}"
+    return f"  • {check_name}"
+
+
+# Karpathy senior-eng check rubric. Lives outside _RUBRIC because:
+# (a) it only fires when a karpathy review actually ran (most callsites
+#     pass karpathy=None and get the prior behavior unchanged), and
+# (b) the weights here are calibrated against the merge_gate verdict,
+#     not triage/pattern signals — fixing one tier here doesn't perturb
+#     the existing rubric's weights.
+#
+# Weight choices:
+#   - "no" → 5 so a clean 5/5 PR drops to 0 → BLOCKED. The karpathy
+#     stage only runs when triage+pattern would otherwise emit READY,
+#     so the only way "no" can fire is on an otherwise-clean PR; we
+#     want the verdict to flip hard.
+#   - "conditional" → 2 so a clean 5/5 drops to 3 (still BLOCKED but
+#     not catastrophic, and the score difference between conditional-
+#     plus-clean and no-plus-clean is visible).
+_KARPATHY_GATE_WEIGHTS: dict[str, int] = {"no": 5, "conditional": 2}
+
+
+def _karpathy_penalty(karpathy: karpathy_check.KarpathyReview | None) -> tuple[int, str | None]:
+    """(weight, label) for the karpathy merge_gate row, or (0, None) if no
+    dock. Pure function; tested in tests/test_fuse_karpathy.py.
+    """
+    if karpathy is None:
+        return 0, None
+    gate = karpathy.merge_gate.safe_for_high_rps_gateway
+    weight = _KARPATHY_GATE_WEIGHTS.get(gate, 0)
+    if weight == 0:
+        return 0, None
+    one_liner = (karpathy.merge_gate.one_liner or "").strip()
+    if one_liner:
+        # Trim trailing period so the rubric's "; " join doesn't double up.
+        one_liner = one_liner.rstrip(".")
+        label = f"karpathy {gate} — {one_liner}"
+    else:
+        label = f"karpathy {gate}"
+    return weight, label
+
+
+def fuse(
+    triage: TriageReport,
+    pattern: PatternReport,
+    karpathy: karpathy_check.KarpathyReview | None = None,
+) -> TriageCard:
+    """Combine the agent outputs into the single card the user sees.
+
+    Pure function. No I/O. Deterministic given (triage, pattern, karpathy).
+    Tested in tests/test_fuse.py + tests/test_fuse_karpathy.py.
+
+    `karpathy` is None whenever the karpathy stage didn't run — either
+    because the fused (triage+pattern) verdict was BLOCKED so the caller
+    short-circuited it, or because the stage failed open. Treating None
+    and KarpathyReview() identically (no penalty either way) keeps the
+    back-compat with every callsite that doesn't pass karpathy.
     """
     score = 5
     penalties: list[str] = []
@@ -743,6 +1091,15 @@ def fuse(triage: TriageReport, pattern: PatternReport) -> TriageCard:
         if predicate(triage, pattern):
             score -= weight
             penalties.append(label(triage, pattern))
+
+    # Karpathy dock applied after the rubric loop so it slots into the
+    # same penalties list that _compose_justification consumes verbatim.
+    k_weight, k_label = _karpathy_penalty(karpathy)
+    if k_weight:
+        score -= k_weight
+        if k_label:
+            penalties.append(k_label)
+
     score = max(score, 0)
 
     # WAITING wins over score-derived states because the score is provisional
@@ -761,7 +1118,7 @@ def fuse(triage: TriageReport, pattern: PatternReport) -> TriageCard:
         score=score,
         verdict=verdict,
         emoji=emoji,
-        verdict_one_liner=_compose_one_liner(verdict, penalties, triage, pattern),
+        verdict_one_liner=_compose_one_liner(verdict, penalties, triage, pattern, karpathy),
         justification=_compose_justification(
             verdict, score, penalties, triage, pattern
         ),
@@ -786,11 +1143,17 @@ def render_card(card: TriageCard) -> str:
     )
 
 
-def render_drilldown(triage: TriageReport, pattern: PatternReport) -> str:
+def render_drilldown(
+    triage: TriageReport,
+    pattern: PatternReport,
+    karpathy: karpathy_check.KarpathyReview | None = None,
+) -> str:
     """Slack mrkdwn for the threaded follow-up: full failure list + findings.
 
     Posted as a reply so it doesn't compete with the card visually but is one
-    click away for anyone who wants the detail.
+    click away for anyone who wants the detail. `karpathy` is None when the
+    senior-eng stage didn't run (the common case — most PRs are blocked by
+    triage+pattern before karpathy gets to weigh in).
     """
     lines: list[str] = ["*Drill-down*"]
 
@@ -798,20 +1161,37 @@ def render_drilldown(triage: TriageReport, pattern: PatternReport) -> str:
         lines.append("\n_Merge state_")
         lines.append("  • merge conflicts — branch must be rebased before it can merge")
 
+    # Scope drift surfaces above failures so the reviewer's eye lands on
+    # the intent-mismatch first when one exists. Reason is required when
+    # scope_drift is True (validator enforces) so we always have something
+    # to print here.
+    if triage.scope_drift:
+        lines.append("\n_Scope drift vs linked issue_")
+        lines.append(f"  • {triage.scope_drift_reason}")
+
+    # Per-failure rationale lookup. Falls back to "" when the model didn't
+    # populate one (older callers, fallback paths, or rationale genuinely
+    # ungroundable from the gather data) — _failure_bullet then renders the
+    # bare check name so nothing breaks.
+    rationales = triage.failure_rationales
+
     if triage.pr_related_failures:
         lines.append("\n_PR-related failures_")
         for c in triage.pr_related_failures:
-            lines.append(f"  • {c}")
+            lines.append(_failure_bullet(c, rationales.get(c, "")))
     if triage.unrelated_failures:
         lines.append("\n_Unrelated failures_")
         for c in triage.unrelated_failures:
-            lines.append(f"  • {c}")
+            lines.append(_failure_bullet(c, rationales.get(c, "")))
     if triage.policy_meta_failures:
         lines.append("\n_Policy / meta failures (zero-penalty)_")
         for c in triage.policy_meta_failures:
-            lines.append(
-                f"  • {c} — operates on PR shape, not code; fix per repo policy"
-            )
+            # Prefer the model's specific rationale (e.g. "DCO sign-off
+            # missing on the most recent commit.") over the generic boilerplate
+            # — the boilerplate is the safety net for older callers that
+            # don't populate failure_rationales.
+            note = rationales.get(c) or "operates on PR shape, not code; fix per repo policy"
+            lines.append(f"  • {c} — {note}")
     if triage.running_checks:
         lines.append("\n_Still running_")
         for c in triage.running_checks:
@@ -832,6 +1212,74 @@ def render_drilldown(triage: TriageReport, pattern: PatternReport) -> str:
         lines.append("\n_Tech debt (FYI, not blocking)_")
         for td in pattern.tech_debt:
             lines.append(f"  • `{td.code_path}` vs `{td.doc_path}` — {td.note}")
+
+    # Prior-signals reconciliation. Sort unresolved (status=agreed) ahead
+    # of resolved/dismissed so the reviewer's eye lands on what the agent
+    # is still flagging. Within each group, blockers first, then concerns,
+    # then nits — so severity ordering matches the rubric weight ordering.
+    if triage.prior_signals:
+        sev_order = {"blocker": 0, "concern": 1, "nit": 2}
+        # Stable sort: status priority first (agreed = needs attention),
+        # then severity within each status group.
+        status_order = {"agreed": 0, "disagreed": 1, "out_of_scope": 2, "resolved": 3}
+        sorted_priors = sorted(
+            triage.prior_signals,
+            key=lambda s: (
+                status_order.get(s.status, 4),
+                sev_order.get(s.severity, 3),
+            ),
+        )
+        lines.append("\n_Prior signals (reviewer + Greptile reconciliation)_")
+        for s in sorted_priors:
+            # Distinct glyph per status so the reviewer can scan: ⚠️ for
+            # unresolved (agreed), ✓ for resolved/dismissed-with-reason.
+            # Same `⚠️` we use elsewhere on failing checks; intentional —
+            # an unresolved blocker IS in the same blast-radius bucket
+            # as a failing CI check.
+            glyph = "⚠️" if s.status == "agreed" else "✓"
+            sev_tag = f" [{s.severity}]" if s.severity != "nit" else ""
+            tail = f" — reason: {s.reason}" if s.reason else ""
+            lines.append(
+                f"  {glyph} {s.source}{sev_tag} ({s.status}): "
+                f"\"{s.excerpt}\"{tail}"
+            )
+
+    # Karpathy senior-eng review surfaces last in the drilldown because:
+    # (a) it only runs on otherwise-clean PRs, so when it's present it IS
+    #     the reason the verdict moved off READY,
+    # (b) the merge_gate verdict + one_liner are the headline already on
+    #     the card; the drilldown is for the supporting findings.
+    if karpathy is not None:
+        gate = karpathy.merge_gate.safe_for_high_rps_gateway
+        glyph = {"yes": "✅", "conditional": "⚠️", "no": "❌"}.get(gate, "?")
+        lines.append("\n_Karpathy senior-eng pre-merge review_")
+        one_liner = (karpathy.merge_gate.one_liner or "").strip()
+        head = f"  {glyph} merge_gate={gate}"
+        if one_liner:
+            head = f"{head} — {one_liner}"
+        lines.append(head)
+        for note in karpathy.merge_gate.unintended_consequences:
+            lines.append(f"  • risk: {note}")
+        for note in karpathy.merge_gate.hot_path_notes:
+            lines.append(f"  • hot path: {note}")
+        if karpathy.merge_gate.what_would_make_yes:
+            lines.append(
+                f"  • to unblock: {karpathy.merge_gate.what_would_make_yes}"
+            )
+        for f in karpathy.findings:
+            tag = f"[{f.breadth}]"
+            if f.regression_archetype:
+                tag = f"{tag} ({f.regression_archetype})"
+            bug = f.bug_class or "?"
+            lines.append(f"  • {tag} {bug}")
+            if f.fix_locus:
+                lines.append(f"      fix locus: {f.fix_locus}")
+            if f.sibling_loci:
+                lines.append(
+                    f"      siblings: {', '.join(f.sibling_loci[:5])}"
+                )
+            if f.recommended_fix:
+                lines.append(f"      recommend: {f.recommended_fix}")
 
     if len(lines) == 1:
         lines.append("Nothing to drill into. Card has the full story.")
@@ -1165,7 +1613,32 @@ CHAT_SYSTEM_PROMPT = (
     "the save did NOT happen — relay the reason to the user verbatim and "
     "ask them how they'd like to rephrase. Call reset_memory only when the "
     "user explicitly asks you to wipe/forget everything.\n\n"
-    "If the user's request doesn't fit either skill, just answer normally."
+    "## Grounding rule (MUST follow)\n\n"
+    "You may only state facts drawn from: (a) the user's messages in this "
+    "thread, (b) the current memory doc shown above when present, and "
+    "(c) verbatim outputs of tools you have called in this thread. Call "
+    "these the **grounded sources**.\n\n"
+    "Before answering, classify the request:\n"
+    "- **Tool-required**: needs information not in the grounded sources — "
+    "e.g. fetching code, file contents, diffs, PR/issue/CI state, metrics, "
+    "web pages, anything live or external.\n"
+    "- **Answerable**: can be fully answered from the grounded sources, or "
+    "is a general/conceptual question that needs no fresh data.\n\n"
+    "For tool-required requests:\n"
+    "1. If a tool whose description fits the request is available, call it.\n"
+    "2. If no available tool fits, reply exactly: \"I don't have a tool "
+    "available to answer that. [one-sentence reason]. Could you paste the "
+    "content directly, or share an input I can run a tool on?\" — then "
+    "stop. Do NOT speculate, summarize from memory, or enumerate "
+    "plausible-sounding properties.\n\n"
+    "NEVER describe code, file structure, class hierarchies, signatures, "
+    "behavior, CI status, or \"conformance to patterns\" unless that exact "
+    "detail appears verbatim in a grounded source. Plausible bullet lists "
+    "generated from a one-line summary are fabrication and MUST NOT be "
+    "produced.\n\n"
+    "For answerable requests, respond directly. If the user's request "
+    "doesn't fit any tool, answer normally — but the grounding rule still "
+    "applies."
 )
 
 chat_agent = Agent(model, system_prompt=CHAT_SYSTEM_PROMPT, output_type=str)
@@ -1235,62 +1708,21 @@ _BATCH_REVIEW_CONCURRENCY = int(os.environ.get("BATCH_REVIEW_CONCURRENCY", "5"))
 _BATCH_REVIEW_MAX = 25
 
 
-async def _review_one_pr(pr_url: str) -> str:
-    """Single-PR review: triage + pattern in parallel, fused into one card.
+async def _review_one_pr_chat(pr_url: str) -> str:
+    """Chat transport for one PR. Calls the same `_review_pr_core` Slack
+    uses, then concats card + drilldown into the single string the chat
+    UI's passthrough renderer expects.
 
-    Mirrors review_pr's observability so dev-chat-driven runs also emit the
-    silent-failure canary. Same attribute names so a single Logfire query
-    covers both paths.
+    Forward-references `_review_pr_core` (defined below near review_pr).
+    Python resolves at call time so the order doesn't matter at runtime.
+    Kept here next to `run_pr_review` because that's the only caller.
     """
-    with logfire.span("run_pr_review", pr_url=pr_url) as span:
-        ctx = await _memory_context()
-        triage_prompt = f"{ctx}Triage this PR: {pr_url}"
-        pattern_prompt = f"{ctx}Review this PR for pattern conformance: {pr_url}"
-        (triage, _, triage_err), (pattern, _, pattern_err) = await asyncio.gather(
-            _run_triage(triage_prompt),
-            _run_pattern(pattern_prompt),
-        )
-        if triage is None or pattern is None:
-            err = triage_err or pattern_err or "unknown"
-            span.set_attribute("review_pr.outcome", "fallback")
-            span.set_attribute("review_pr.error", str(err)[:300])
-            return render_fallback_card(pr_url, err)
-        card = fuse(triage, pattern)
-        pr_related_n = len(triage.pr_related_failures)
-        unrelated_n = len(triage.unrelated_failures)
-        failing_total = pr_related_n + unrelated_n
-        # Conflict-aware silent failure: READY card with either red CI OR
-        # confirmed merge conflicts both count as silent passes. Conflict-only
-        # READY cards shouldn't be possible after the rubric change, but keep
-        # the canary anyway in case a future edit decouples the two.
-        silent_failure = card.verdict == "READY" and (
-            failing_total > 0 or triage.has_merge_conflicts is True
-        )
-        span.set_attribute("review_pr.outcome", "card")
-        span.set_attribute("review_pr.score", card.score)
-        span.set_attribute("review_pr.verdict", card.verdict)
-        span.set_attribute("review_pr.failing_total", failing_total)
-        span.set_attribute("review_pr.pr_related_failures", pr_related_n)
-        span.set_attribute("review_pr.unrelated_failures", unrelated_n)
-        span.set_attribute(
-            "review_pr.has_merge_conflicts",
-            (
-                ""
-                if triage.has_merge_conflicts is None
-                else str(triage.has_merge_conflicts)
-            ),
-        )
-        span.set_attribute("review_pr.silent_failure", silent_failure)
-        if silent_failure:
-            log.error(
-                "silent_failure_detected url=%s verdict=%s failing=%s conflicts=%s names=%s",
-                pr_url,
-                card.verdict,
-                failing_total,
-                triage.has_merge_conflicts,
-                triage.pr_related_failures + triage.unrelated_failures,
-            )
-        return render_card(card) + "\n\n---\n\n" + render_drilldown(triage, pattern)
+    card_text, drilldown = await _review_pr_core(
+        pr_url, source="chat", channel=None, thread_ts=None
+    )
+    if drilldown is None:
+        return card_text
+    return card_text + "\n\n---\n\n" + drilldown
 
 
 @chat_agent.tool_plain
@@ -1326,14 +1758,14 @@ async def run_pr_review(pr_urls: list[str]) -> str:
     # output is byte-identical to the pre-batch version. Keeps the existing
     # passthrough contract intact for the common case.
     if len(deduped) == 1 and not truncation_note:
-        return await _review_one_pr(deduped[0])
+        return await _review_one_pr_chat(deduped[0])
 
     sem = asyncio.Semaphore(_BATCH_REVIEW_CONCURRENCY)
 
     async def _one(url: str) -> str:
         async with sem:
             try:
-                return await _review_one_pr(url)
+                return await _review_one_pr_chat(url)
             except Exception as e:
                 log.exception("batch_review_failed url=%s", url)
                 return render_fallback_card(url, str(e))
@@ -1383,10 +1815,21 @@ _FIELD_NOTES: dict[str, str] = {
     "unrelated_failures": "list of failing check names classified as infra/unrelated",
     "unrelated_failures_also_failing_elsewhere": "subset of unrelated_failures whose same check is also failing on at least one of the sampled other_prs (broken-for-everyone infra; rubric does NOT dock these)",
     "policy_meta_failures": "policy/meta checks (Verify PR source branch, DCO, cla-bot) failing on this PR; zero-penalty bucket, surfaced for contributor awareness only",
+    "failure_rationales": "per-check sentence (≤180 chars, keyed by check name) explaining WHY each failure is in its bucket; rendered in the drilldown next to the check name",
     "running_checks": "list of check names still in progress",
     "greptile_score": "Greptile bot's confidence score 1-5, or null if Greptile hasn't reviewed",
     "has_circleci_checks": "true iff any CircleCI check ran on this PR",
     "has_merge_conflicts": "tri-state: true=confirmed conflicts, false=clean, null=GitHub still computing",
+    "scope_drift": "true iff the diff addresses concerns the linked issue doesn't mention (over-reach) OR the diff is narrower than the issue's stated bug class (under-reach / narrow guard); compared against gather output's linked_issues",
+    "scope_drift_reason": "≤300-char sentence citing the linked-issue field (title or body) that conflicts with the diff; required when scope_drift=true",
+    "prior_signals": "Greptile review body + human PR comments reconciled by severity (nit/concern/blocker) and status (agreed/resolved/disagreed/out_of_scope); rubric docks on `agreed` entries by severity tier",
+    # PriorSignal (per-entry shape) — qualified keys where field names
+    # collide with PatternFinding (source, severity).
+    "PriorSignal.source": "comment author's GitHub login, or 'greptile' for the bundled Greptile review body",
+    "excerpt": "≤200-char verbatim quote from the gather data that the classification turns on",
+    "PriorSignal.severity": "nit / concern / blocker; rubric docks 0/1/2 respectively when status=agreed",
+    "PriorSignal.status": "agreed (unresolved, docks rubric) / resolved (diff fixed it) / disagreed (with reason) / out_of_scope (with reason)",
+    "PriorSignal.reason": "required when status is disagreed or out_of_scope; empty when agreed or resolved",
     # PatternReport
     "findings": "pattern-conformance findings vs the repo's docs and sibling files",
     "tech_debt": "ambient tech-debt items spotted (FYI, never blocks)",
@@ -1430,17 +1873,27 @@ def _describe_model(name: str, model_cls: type[BaseModel]) -> list[str]:
     Asserts every field has a _FIELD_NOTES entry; missing notes fail loudly at
     module load so you can't ship a new observable without describing it to
     the merger gate.
+
+    Lookup precedence: `<ClassName>.<field>` wins over the bare `<field>` key.
+    Lets two models share a field name with different meanings (e.g.
+    PatternFinding.source = "docs"|"code" vs PriorSignal.source = author
+    login) without losing fidelity in the rendered description.
     """
     doc = (model_cls.__doc__ or "no docstring").strip().splitlines()[0]
     lines: list[str] = [f"{name} ({doc}):"]
     for field_name, info in model_cls.model_fields.items():
-        if field_name not in _FIELD_NOTES:
+        qualified = f"{model_cls.__name__}.{field_name}"
+        if qualified in _FIELD_NOTES:
+            note = _FIELD_NOTES[qualified]
+        elif field_name in _FIELD_NOTES:
+            note = _FIELD_NOTES[field_name]
+        else:
             raise RuntimeError(
                 f"_FIELD_NOTES missing entry for {model_cls.__name__}.{field_name}; "
                 f"add a one-line description so the memory-gate LLM knows what it does"
             )
         type_str = _format_type(info.annotation)
-        lines.append(f"  - {field_name}: {type_str} — {_FIELD_NOTES[field_name]}")
+        lines.append(f"  - {field_name}: {type_str} — {note}")
     return lines
 
 
@@ -1568,7 +2021,23 @@ _merger_agent = Agent(
 )
 
 
-app = FastAPI()
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Open the asyncpg pool on startup, close it on shutdown.
+
+    init_db() also runs the schema bootstrap (idempotent IF NOT EXISTS),
+    so a fresh DB Just Works without a separate migrate step. Failure
+    here surfaces as a startup-time crash with a clear error rather
+    than the first request 500ing once it tries to read the pool.
+    """
+    await db.init_db()
+    try:
+        yield
+    finally:
+        await db.close_db()
+
+
+app = FastAPI(lifespan=_lifespan)
 logfire.instrument_fastapi(app, capture_headers=True)
 
 # --- Login gate for the dev chat UI -------------------------------------------
@@ -1668,55 +2137,222 @@ def _last_passthrough_return(messages) -> str | None:
     return last
 
 
-async def review_pr(pr_url: str, channel: str, thread_ts: str) -> None:
-    """Run both agents in parallel, fuse their typed outputs into one card,
-    and post it (plus a threaded drill-down) to Slack.
+def _dump_messages(messages: list) -> list[dict]:
+    """Serialize a pydantic_ai message history to plain JSON-able dicts.
 
-    Card shape is deterministic — the model fills schema slots, Python composes
-    the prose. See render_card() / fuse() for the contract.
+    Same shape Logfire receives via `pydantic_ai.all_messages` and what
+    `runs.messages` stores in Postgres. Round-trips back through
+    `ModelMessagesTypeAdapter.validate_python(...)` so any future replay
+    or LLM-judge tool can reconstruct the original ModelMessage objects.
+
+    Failure-tolerant: if the adapter can't serialize (schema drift in
+    pydantic_ai, exotic content type), we log and return [] rather than
+    blowing up the agent run. Persisting an empty trace is strictly
+    better than failing the whole review.
     """
+    if not messages:
+        return []
+    try:
+        from pydantic_ai.messages import ModelMessagesTypeAdapter  # local: only when persisting
+
+        return ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+    except Exception as e:  # noqa: BLE001 — best-effort serialization
+        log.warning("dump_messages failed: %s", e)
+        return []
+
+
+async def _persist_run(
+    *,
+    run_id: str,
+    pr_url: str,
+    source: str,
+    channel: str | None,
+    thread_ts: str | None,
+    duration_s: float,
+    triage,  # TriageReport | None
+    pattern,  # PatternReport | None
+    triage_messages: list,
+    pattern_messages: list,
+    card,  # TriageCard | None
+    logfire_trace_id: str | None,
+    karpathy: karpathy_check.KarpathyReview | None = None,
+) -> None:
+    """Append one run record to the runs table.
+
+    Best-effort: a DB write failure logs and returns silently — we never
+    want a runs-persistence hiccup to break the user-facing Slack post.
+    The Logfire span still has the trace, so we'd lose only the in-app
+    /runs UI row, not observability.
+    """
+    triage_dump = triage.model_dump(mode="json") if triage else None
+    pattern_dump = pattern.model_dump(mode="json") if pattern else None
+    card_dump = card.model_dump(mode="json") if card else None
+    # Skim trace = parts the chat UI has rendered for months. Cheap to
+    # build from the typed messages and saves the runs UI from re-parsing
+    # the full message list every page load.
+    trace_skim = _extract_tool_trace(triage_messages) + _extract_tool_trace(pattern_messages)
+
+    # PR identity for the list-view sidebar. Triage is the canonical
+    # source (pattern can be empty / errored); fall back to the URL
+    # tail so the row never renders title-less.
+    pr_number = (triage and triage.pr_number) or _pr_number_from_url(pr_url)
+    pr_title = (triage and triage.pr_title) or pr_url
+    pr_author = (triage and triage.pr_author) or ""
+
+    record = {
+        "run_id": run_id,
+        "ts": time.time(),
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "pr_title": pr_title,
+        "pr_author": pr_author,
+        "source": source,
+        "channel": channel,
+        "thread_ts": thread_ts,
+        "duration_s": round(duration_s, 3),
+        "logfire_trace_id": logfire_trace_id,
+        # Token / cost / model fields are populated by the eval harness
+        # later (it reads them off the pydantic_ai usage object); left
+        # null here so the prod path doesn't add latency for a
+        # nice-to-have.
+        "model_name": None,
+        "tokens_in": None,
+        "tokens_out": None,
+        "cost_usd": None,
+        "triage": triage_dump,
+        "pattern": pattern_dump,
+        "card": card_dump,
+        "tool_trace": trace_skim,
+        "messages": {
+            "triage": _dump_messages(triage_messages),
+            "pattern": _dump_messages(pattern_messages),
+        },
+        # `{}` (the column default) means "did not run" — see migration
+        # 0002_karpathy_check.sql header. A real review serializes via
+        # model_dump(mode="json") so the JSONB round-trips cleanly.
+        "karpathy_check": karpathy.model_dump(mode="json") if karpathy else {},
+    }
+    try:
+        await db.insert_run(record)
+    except Exception as e:  # noqa: BLE001 — best-effort persistence
+        log.exception("persist_run_failed run_id=%s err=%s", run_id, e)
+
+
+_PR_NUMBER_RE = re.compile(r"/pull/(\d+)")
+
+
+def _pr_number_from_url(url: str) -> int | None:
+    m = _PR_NUMBER_RE.search(url)
+    return int(m.group(1)) if m else None
+
+
+# --- Pure review core, two thin transport wrappers ----------------------------
+# One codepath does the work (triage + pattern + fuse + persist + observability).
+# Slack and chat differ only in how they ship the resulting card_text/drilldown
+# to the user — Slack posts two messages, chat returns a concatenated string.
+# Keeps both paths in lockstep on schema, persistence, span attributes, and
+# silent-failure canary.
+
+
+async def _review_pr_core(
+    pr_url: str,
+    *,
+    source: str,
+    channel: str | None,
+    thread_ts: str | None,
+) -> tuple[str, str | None]:
+    """Run both agents in parallel, fuse to a card, persist to runs table.
+
+    Returns (card_text, drilldown_text). On agent failure, returns
+    (fallback_card_text, None) — caller decides how to surface the
+    fallback (Slack posts it as one message; chat concats it).
+
+    `source` lands in runs.source ('slack' | 'chat' | 'eval' | ...). Drives
+    the badge on the /runs sidebar and lets the eval harness query its
+    own runs without dragging in Slack noise.
+    """
+    t_start = time.perf_counter()
     with logfire.span(
         "review_pr",
         pr_url=pr_url,
+        source=source,
         channel=channel,
         thread_ts=thread_ts,
     ) as span:
-        if not slack_handler.is_enabled():
-            log.error("review_pr called without Slack configured url=%s", pr_url)
-            return
+        # Stable run_id reused across (a) the runs table primary key and
+        # (b) the Logfire trace id so the two systems stay correlatable.
+        try:
+            otel_ctx = span.get_span_context()  # type: ignore[attr-defined]
+            run_id = f"{otel_ctx.trace_id:032x}"
+        except Exception:  # noqa: BLE001
+            run_id = uuid.uuid4().hex
+        span.set_attribute("review_pr.run_id", run_id)
 
         ctx = await _memory_context()
         triage_prompt = f"{ctx}Triage this PR: {pr_url}"
         pattern_prompt = f"{ctx}Review this PR for pattern conformance: {pr_url}"
-        (triage, _, triage_err), (pattern, _, pattern_err) = await asyncio.gather(
+        (triage, triage_messages, triage_err), (pattern, pattern_messages, pattern_err) = await asyncio.gather(
             _run_triage(triage_prompt),
             _run_pattern(pattern_prompt),
         )
 
-        # Either agent failing means we can't build a real card. Show the
-        # fallback (same shape, marked as ⚠️ ERROR) so the user still sees the
-        # familiar layout instead of a raw exception trace.
+        # Either agent failing means we can't build a real card. Persist
+        # the failed run too — a fallback card is a real data point for
+        # the eval set ("agent crashed on this PR shape").
         if triage is None or pattern is None:
             err = triage_err or pattern_err or "unknown agent failure"
             span.set_attribute("review_pr.outcome", "fallback")
             span.set_attribute("review_pr.error", str(err)[:300])
-            await slack_handler.bolt.client.chat_postMessage(
+            await _persist_run(
+                run_id=run_id,
+                pr_url=pr_url,
+                source=source,
                 channel=channel,
                 thread_ts=thread_ts,
-                text=render_fallback_card(pr_url, err),
+                duration_s=time.perf_counter() - t_start,
+                triage=triage,
+                pattern=pattern,
+                triage_messages=triage_messages,
+                pattern_messages=pattern_messages,
+                card=None,
+                logfire_trace_id=run_id,
             )
-            log.warning("posted_fallback_card url=%s err=%s", pr_url, err)
-            return
+            log.warning("review_fallback url=%s source=%s err=%s", pr_url, source, err)
+            return render_fallback_card(pr_url, err), None
 
-        card = fuse(triage, pattern)
+        # Karpathy senior-eng pre-merge check is the gate's most expensive
+        # tool (a CC subprocess + worktree per call), so we only invoke it
+        # when triage+pattern would otherwise emit READY. The probe call
+        # to fuse() with karpathy=None tells us the would-be verdict
+        # without committing to the karpathy-aware card yet. fuse() is a
+        # pure function so calling it twice in this branch is fine.
+        provisional = fuse(triage, pattern)
+        karpathy_review: karpathy_check.KarpathyReview | None = None
+        if provisional.verdict == "READY":
+            try:
+                karpathy_review = await karpathy_check.run_karpathy_check(pr_url)
+            except Exception as e:  # noqa: BLE001 — fail-open on any error
+                # The module is supposed to swallow its own exceptions and
+                # return None, but defense-in-depth here ensures a karpathy
+                # bug never bricks the user-facing review.
+                log.exception("karpathy_check_unhandled url=%s err=%s", pr_url, e)
+                karpathy_review = None
+            span.set_attribute(
+                "review_pr.karpathy_ran", karpathy_review is not None
+            )
+            if karpathy_review is not None:
+                span.set_attribute(
+                    "review_pr.karpathy_gate",
+                    karpathy_review.merge_gate.safe_for_high_rps_gateway,
+                )
+        card = fuse(triage, pattern, karpathy_review)
         card_text = render_card(card)
-        drilldown = render_drilldown(triage, pattern)
+        drilldown = render_drilldown(triage, pattern, karpathy_review)
 
-        # Observability: emit failure counts + verdict on the span so we can
-        # query "PRs where the bot returned READY but failures > 0" in Logfire.
-        # That's the canary for the silent-pass bug PR #26451 surfaced — even
-        # with the rubric/render fixes, this dashboard catches future drift
-        # (e.g. someone adds another verdict path that swallows failures).
+        # Observability: query "PRs where the bot returned READY but
+        # failures > 0" in Logfire. The canary for the silent-pass bug
+        # PR #26451 surfaced — covers any future verdict path that
+        # accidentally swallows failures.
         pr_related_n = len(triage.pr_related_failures)
         unrelated_n = len(triage.unrelated_failures)
         failing_total = pr_related_n + unrelated_n
@@ -1739,10 +2375,6 @@ async def review_pr(pr_url: str, channel: str, thread_ts: str) -> None:
                 else str(triage.has_merge_conflicts)
             ),
         )
-        # The canary attribute itself: explicit boolean so the Logfire query is
-        # `attributes.review_pr.silent_failure = true` instead of computing it.
-        # Now also fires when a READY card slips through with merge conflicts —
-        # belt-and-suspenders for the conflict-blocker rubric row.
         silent_failure = card.verdict == "READY" and (
             failing_total > 0 or triage.has_merge_conflicts is True
         )
@@ -1757,18 +2389,48 @@ async def review_pr(pr_url: str, channel: str, thread_ts: str) -> None:
                 triage.pr_related_failures + triage.unrelated_failures,
             )
 
-        await slack_handler.bolt.client.chat_postMessage(
-            channel=channel, thread_ts=thread_ts, text=card_text
-        )
-        await slack_handler.bolt.client.chat_postMessage(
-            channel=channel, thread_ts=thread_ts, text=drilldown
+        await _persist_run(
+            run_id=run_id,
+            pr_url=pr_url,
+            source=source,
+            channel=channel,
+            thread_ts=thread_ts,
+            duration_s=time.perf_counter() - t_start,
+            triage=triage,
+            pattern=pattern,
+            triage_messages=triage_messages,
+            pattern_messages=pattern_messages,
+            card=card,
+            logfire_trace_id=run_id,
+            karpathy=karpathy_review,
         )
         log.info(
-            "posted_review url=%s score=%s verdict=%s failing=%s",
+            "review_done url=%s source=%s score=%s verdict=%s failing=%s run_id=%s",
             pr_url,
+            source,
             card.score,
             card.verdict,
             failing_total,
+            run_id,
+        )
+        return card_text, drilldown
+
+
+async def review_pr(pr_url: str, channel: str, thread_ts: str) -> None:
+    """Slack transport. Calls the pure core, posts card + drilldown to
+    the originating thread. No business logic of its own."""
+    if not slack_handler.is_enabled():
+        log.error("review_pr called without Slack configured url=%s", pr_url)
+        return
+    card_text, drilldown = await _review_pr_core(
+        pr_url, source="slack", channel=channel, thread_ts=thread_ts
+    )
+    await slack_handler.bolt.client.chat_postMessage(
+        channel=channel, thread_ts=thread_ts, text=card_text
+    )
+    if drilldown is not None:
+        await slack_handler.bolt.client.chat_postMessage(
+            channel=channel, thread_ts=thread_ts, text=drilldown
         )
 
 
@@ -1987,6 +2649,7 @@ CHAT_HTML = """<!doctype html>
 <aside id="sidebar">
   <div id="sidebar-head">
     <h2>Chats</h2>
+    <a href="/runs" style="font-size:12px;color:#06c;text-decoration:none;padding:4px 8px;border:1px solid #ddd;border-radius:4px;background:#fff;margin-right:6px">Runs</a>
     <button id="new-btn" type="button">+ New</button>
   </div>
   <div id="threads"></div>
@@ -2308,6 +2971,1038 @@ form.addEventListener('submit', async (e) => {
 )
 async def chat_ui() -> str:
     return CHAT_HTML
+
+
+# --- Runs dashboard ------------------------------------------------------------
+# At-a-glance view of every PR-review the agent has run. All persistence lives
+# in Postgres now (see db.py + migrations/0001_init.sql); the previous JSONL
+# fallback was removed so there's exactly one source of truth.
+#
+# Goal of this UI: log in Monday morning, scan what the agent did over the
+# weekend, click into anything that doesn't match my own judgment, write a
+# note, and graduate the disagreement into the eval set so the next prompt
+# tweak gets graded against it.
+
+
+class RunSummary(BaseModel):
+    """Sidebar row. Trimmed payload — full record only loads on detail view."""
+
+    run_id: str
+    ts: float
+    pr_url: str
+    pr_number: int | None = None
+    pr_title: str
+    pr_author: str
+    score: int
+    verdict: str
+    emoji: str
+    duration_s: float | None = None
+    cost_usd: float | None = None
+    human_label: str | None = None
+    # Source of the run — used to drive the badge color in the list.
+    # 'mock' for seed records, 'slack'/'chat'/'eval' for real runs.
+    source: str
+
+
+class RunMessages(BaseModel):
+    """Full pydantic_ai message history per agent arm. Same shape as
+    `ModelMessagesTypeAdapter.dump_python(..., mode='json')` and the
+    `pydantic_ai.all_messages` block Logfire receives — so the grader (and
+    any future LLM-judge) sees exactly what the agent saw: every system
+    prompt, every tool call with raw args, every tool return with the full
+    gathered result, every retry, every assistant text. This is the load-
+    bearing field for the eval workflow — the card alone tells you the
+    verdict, but only the messages tell you whether the agent had good
+    inputs to make it on.
+
+    Either arm may be `[]` on a triage-only or pattern-only run (e.g. when
+    one agent crashed); the UI renders an "agent didn't run" state.
+    """
+
+    triage: list[dict] = Field(default_factory=list)
+    pattern: list[dict] = Field(default_factory=list)
+
+
+class RunDetail(BaseModel):
+    """Full record for the detail view. Mirrors what review_pr() persists."""
+
+    run_id: str
+    ts: float
+    pr_url: str
+    pr_number: int | None = None
+    pr_title: str
+    pr_author: str
+    source: str
+    channel: str | None = None
+    thread_ts: str | None = None
+    duration_s: float | None = None
+    logfire_trace_id: str | None = None
+    model_name: str | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    cost_usd: float | None = None
+    triage: dict
+    pattern: dict
+    card: dict
+    tool_trace: list[dict] = Field(default_factory=list)
+    messages: RunMessages = Field(default_factory=RunMessages)
+    human_label: str | None = None
+    human_notes: str | None = None
+
+
+class LabelRequest(BaseModel):
+    human_label: str | None = None  # "ready" | "not_ready" | None
+    human_notes: str | None = None
+
+    @field_validator("human_label")
+    @classmethod
+    def _label_in_set(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if v not in {"ready", "not_ready"}:
+            raise ValueError("human_label must be 'ready', 'not_ready', or null")
+        return v
+
+
+def _detail_from_db(row: dict) -> RunDetail:
+    """DB row → RunDetail. Centralized so list/get/graduate all use the
+    same field-name mapping; means a future column rename is one fix."""
+    return RunDetail(
+        run_id=row["run_id"],
+        ts=row["ts"],
+        pr_url=row["pr_url"],
+        pr_number=row["pr_number"],
+        pr_title=row["pr_title"] or row["pr_url"],
+        pr_author=row["pr_author"] or "",
+        source=row["source"],
+        channel=row["channel"],
+        thread_ts=row["thread_ts"],
+        duration_s=row["duration_s"],
+        logfire_trace_id=row["logfire_trace_id"],
+        model_name=row["model_name"],
+        tokens_in=row["tokens_in"],
+        tokens_out=row["tokens_out"],
+        cost_usd=row["cost_usd"],
+        triage=row["triage"] or {},
+        pattern=row["pattern"] or {},
+        card=row["card"] or {},
+        tool_trace=row["tool_trace"] or [],
+        messages=RunMessages(**(row["messages"] or {})),
+        human_label=row["human_label"],
+        human_notes=row["human_notes"],
+    )
+
+
+@app.get(
+    "/runs/api/runs",
+    response_model=list[RunSummary],
+    dependencies=[Depends(require_login)],
+)
+async def list_runs() -> list[RunSummary]:
+    rows = await db.list_runs_summary(limit=500)
+    return [
+        RunSummary(
+            run_id=r["run_id"],
+            ts=r["ts"],
+            pr_url=r["pr_url"],
+            pr_number=r["pr_number"],
+            pr_title=r["pr_title"] or r["pr_url"],
+            pr_author=r["pr_author"] or "",
+            score=r["score"],
+            verdict=r["verdict"] or "BLOCKED",
+            emoji=r["emoji"] or "⚠️",
+            duration_s=r["duration_s"],
+            cost_usd=r["cost_usd"],
+            human_label=r["human_label"],
+            source=r["source"],
+        )
+        for r in rows
+    ]
+
+
+@app.get(
+    "/runs/api/runs/{run_id}",
+    response_model=RunDetail,
+    dependencies=[Depends(require_login)],
+)
+async def get_run(run_id: str) -> RunDetail:
+    row = await db.get_run(run_id)
+    if row is None:
+        raise HTTPException(404, "run not found")
+    return _detail_from_db(row)
+
+
+@app.post(
+    "/runs/api/runs/{run_id}/label",
+    response_model=RunDetail,
+    dependencies=[Depends(require_login)],
+)
+async def label_run(run_id: str, req: LabelRequest) -> RunDetail:
+    """Append an annotation row + update the denormalized run.
+
+    The full annotation history is preserved (see GET .../annotations);
+    `runs.human_label` always reflects the latest write so the list
+    view stays a one-table read."""
+    try:
+        await db.add_annotation(run_id, req.human_label, req.human_notes)
+    except LookupError:
+        raise HTTPException(404, "run not found")
+    row = await db.get_run(run_id)
+    return _detail_from_db(row)  # type: ignore[arg-type]
+
+
+@app.get(
+    "/runs/api/runs/{run_id}/annotations",
+    dependencies=[Depends(require_login)],
+)
+async def list_run_annotations(run_id: str) -> list[dict]:
+    """Full annotation history for one run, newest first. Lets the UI
+    render an audit trail of who-thought-what-when later."""
+    return await db.list_annotations(run_id)
+
+
+@app.post(
+    "/runs/api/runs/{run_id}/graduate",
+    dependencies=[Depends(require_login)],
+)
+async def graduate_run(run_id: str, set_name: str = "graduated") -> dict:
+    """Promote a labeled run into an eval set (default: 'graduated').
+
+    Writes one row to `eval_prs` keyed on (url, set_name) so re-clicking
+    is idempotent: it updates the existing row's label/notes instead of
+    duplicating. Refuses unlabeled runs because the eval matrix needs
+    ground truth — an "ungraded" entry would just inflate the null
+    bucket without contributing signal.
+
+    The full agent trace (messages, card, triage, pattern) is NOT copied
+    into the eval set itself; that data lives on the runs row and the
+    eval entry's `source_run_id` points at it. Saves duplicating ~20KB
+    per graduated PR and keeps the eval set small enough to dump as
+    JSON for the download endpoint.
+    """
+    row = await db.get_run(run_id)
+    if row is None:
+        raise HTTPException(404, "run not found")
+    if not row["human_label"]:
+        raise HTTPException(400, "label this run first (ready / not_ready)")
+
+    grad_date = datetime.fromtimestamp(row["ts"], tz=timezone.utc).date().isoformat()
+    upserted = await db.upsert_eval_pr(
+        url=row["pr_url"],
+        set_name=set_name,
+        category="graduated_from_runs_ui",
+        notes=f"Graduated from run {run_id} on {grad_date}.",
+        human_label=row["human_label"],
+        human_notes=row["human_notes"],
+        source_run_id=run_id,
+    )
+    return {
+        "ok": True,
+        "set_name": set_name,
+        "eval_pr_id": upserted["id"],
+        "url": upserted["url"],
+    }
+
+
+# --- /api/v1 CRUD endpoints ----------------------------------------------------
+# Public-ish API surface (still gated on require_login) for programmatic
+# eval-set management and run downloads. The /runs UI uses the older
+# /runs/api/* paths; new automation should target /api/v1.
+
+
+class EvalPrIn(BaseModel):
+    """Body for POST /api/v1/eval-sets/{set_name}/prs. set_name comes
+    from the URL path; everything else is optional except url."""
+
+    url: str
+    repo: str = "BerriAI/litellm"
+    category: str | None = None
+    notes: str | None = None
+    human_label: str | None = None
+    human_notes: str | None = None
+    source_run_id: str | None = None
+
+    @field_validator("human_label")
+    @classmethod
+    def _label_in_set(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if v not in {"ready", "not_ready"}:
+            raise ValueError("human_label must be 'ready', 'not_ready', or null")
+        return v
+
+
+class EvalPrPatch(BaseModel):
+    """PATCH body — every field optional, None means 'leave unchanged'."""
+
+    category: str | None = None
+    notes: str | None = None
+    human_label: str | None = None
+    human_notes: str | None = None
+
+    @field_validator("human_label")
+    @classmethod
+    def _label_in_set(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if v not in {"ready", "not_ready"}:
+            raise ValueError("human_label must be 'ready', 'not_ready', or null")
+        return v
+
+
+@app.get("/api/v1/eval-sets", dependencies=[Depends(require_login)])
+async def api_list_eval_sets() -> list[dict]:
+    return await db.list_eval_sets()
+
+
+@app.get(
+    "/api/v1/eval-sets/{set_name}/prs",
+    dependencies=[Depends(require_login)],
+)
+async def api_list_eval_prs(set_name: str) -> list[dict]:
+    return await db.list_eval_prs(set_name)
+
+
+@app.post(
+    "/api/v1/eval-sets/{set_name}/prs",
+    dependencies=[Depends(require_login)],
+)
+async def api_add_eval_pr(set_name: str, body: EvalPrIn) -> dict:
+    return await db.upsert_eval_pr(
+        url=body.url,
+        set_name=set_name,
+        repo=body.repo,
+        category=body.category,
+        notes=body.notes,
+        human_label=body.human_label,
+        human_notes=body.human_notes,
+        source_run_id=body.source_run_id,
+    )
+
+
+@app.patch(
+    "/api/v1/eval-sets/{set_name}/prs/{pr_id}",
+    dependencies=[Depends(require_login)],
+)
+async def api_update_eval_pr(set_name: str, pr_id: int, body: EvalPrPatch) -> dict:
+    row = await db.update_eval_pr(
+        set_name,
+        pr_id,
+        category=body.category,
+        notes=body.notes,
+        human_label=body.human_label,
+        human_notes=body.human_notes,
+    )
+    if row is None:
+        raise HTTPException(404, "eval_pr not found")
+    return row
+
+
+@app.delete(
+    "/api/v1/eval-sets/{set_name}/prs/{pr_id}",
+    dependencies=[Depends(require_login)],
+)
+async def api_delete_eval_pr(set_name: str, pr_id: int) -> dict:
+    ok = await db.delete_eval_pr(set_name, pr_id)
+    if not ok:
+        raise HTTPException(404, "eval_pr not found")
+    return {"ok": True}
+
+
+@app.get(
+    "/api/v1/eval-sets/{set_name}/download",
+    dependencies=[Depends(require_login)],
+)
+async def api_download_eval_set(set_name: str):
+    """Download a curated eval set as JSON, in the same shape as the
+    legacy pr_set.json files. Drop into tests/eval/ or feed straight to
+    `run_eval.py --set-file <path>` for a local improvement loop.
+
+    Includes only the minimal fields the eval harness needs (url +
+    category + notes + human label/notes). Full traces stay on the
+    `runs` table — fetch them via /api/v1/runs/{id} or the bulk export
+    if you need them too.
+    """
+    rows = await db.list_eval_prs(set_name)
+    payload = {
+        "_about": f"Eval set '{set_name}' exported from /api/v1.",
+        "set_name": set_name,
+        "exported_at": time.time(),
+        "prs": [
+            {
+                "url": r["url"],
+                "category": r["category"],
+                "notes": r["notes"],
+                "human_label": r["human_label"],
+                "human_notes": r["human_notes"],
+                "source_run_id": r["source_run_id"],
+            }
+            for r in rows
+        ],
+    }
+    from fastapi.responses import Response
+
+    return Response(
+        content=json.dumps(payload, indent=2, ensure_ascii=False),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="pr_set_{set_name}.json"'
+        },
+    )
+
+
+@app.get(
+    "/api/v1/runs/export",
+    dependencies=[Depends(require_login)],
+)
+async def api_export_runs(
+    label_state: str | None = None,
+    source: str | None = None,
+    since: float | None = None,
+):
+    """Stream JSONL of full run records (with messages) matching the
+    given filters. Designed for the "download annotated runs for local
+    improvement loop" workflow:
+
+      curl -b cookies.txt 'localhost:8000/api/v1/runs/export?label_state=labeled' \\
+        > labeled_runs.jsonl
+
+    Query params:
+      label_state = labeled | unlabeled | ready | not_ready
+      source      = slack | chat | eval | mock
+      since       = UNIX epoch seconds; only runs newer than this
+    """
+    from fastapi.responses import StreamingResponse
+
+    async def _gen():
+        async for row in db.stream_runs_for_export(
+            label_state=label_state,
+            source=source,
+            since_epoch=since,
+        ):
+            yield json.dumps(row, ensure_ascii=False, default=str) + "\n"
+
+    return StreamingResponse(
+        _gen(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="runs_export.jsonl"'},
+    )
+
+
+RUNS_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Agent runs — litellm-bot</title>
+<style>
+  *{box-sizing:border-box}
+  /* Page scrolls normally — no fixed-viewport flex contortions. The
+     sidebar is position:fixed so it stays put while the main column
+     scrolls; the right column inside main uses position:sticky so the
+     trace follows you as you scroll the card/drilldown. This is the
+     pattern GitHub PR pages use and it survives any viewport size,
+     browser zoom, or content height without `min-height:0` voodoo. */
+  html,body{margin:0;padding:0}
+  body{font:14px/1.5 -apple-system,system-ui,sans-serif;color:#222;background:#fafafa;padding-left:380px}
+  #sidebar{position:fixed;top:0;left:0;width:380px;height:100vh;border-right:1px solid #ddd;background:#f5f5f7;display:flex;flex-direction:column;z-index:5}
+  #sidebar-head{padding:12px 14px;border-bottom:1px solid #e0e0e3;display:flex;gap:8px;align-items:center}
+  #sidebar-head h2{font-size:13px;margin:0;flex:1;color:#333}
+  #nav-link{font-size:12px;color:#06c;text-decoration:none;padding:4px 8px;border:1px solid #ddd;border-radius:4px;background:#fff}
+  #nav-link:hover{background:#eef}
+  #runs-list{flex:1;overflow-y:auto}
+  .run-row{padding:10px 14px;border-bottom:1px solid #eee;cursor:pointer;display:flex;flex-direction:column;gap:4px}
+  .run-row:hover{background:#eef}
+  .run-row.active{background:#222;color:#fff}
+  .run-row.active .run-meta{color:#bbb}
+  .run-row.active .run-title{color:#fff}
+  .run-top{display:flex;align-items:center;gap:6px}
+  .badge{font-size:11px;padding:2px 6px;border-radius:3px;font-weight:600;flex-shrink:0}
+  .badge-ready{background:#d4f4dd;color:#0a5}
+  .badge-blocked{background:#fde0e0;color:#c00}
+  .badge-waiting{background:#fff4d6;color:#a70}
+  .run-row.active .badge{filter:brightness(1.05)}
+  .scope-tag{font-size:10px;padding:1px 5px;border-radius:3px;background:#ddd;color:#555;text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
+  .scope-mock{background:#e8e0ff;color:#63a}
+  .scope-slack{background:#e1f0ff;color:#06c}
+  .scope-chat{background:#fff4d6;color:#a70}
+  .scope-eval{background:#d4f4dd;color:#0a5}
+  .label-tag{font-size:10px;padding:1px 5px;border-radius:3px;flex-shrink:0}
+  .label-ready{background:#d4f4dd;color:#0a5}
+  .label-not_ready{background:#fde0e0;color:#c00}
+  .label-empty{background:#eee;color:#888}
+  .run-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:500}
+  .run-meta{font-size:11px;color:#888;display:flex;gap:8px}
+  .empty{color:#999;font-size:13px;text-align:center;padding:32px}
+  /* Main column = the rest of the page beside the fixed sidebar. No
+     overflow tricks; the document scrolls. */
+  #main{min-height:100vh}
+  #empty-detail{min-height:100vh;display:flex;align-items:center;justify-content:center;color:#999;font-size:14px}
+  #detail{display:block;width:100%}
+  /* Header sticks to top of viewport while you scroll. */
+  .detail-header{position:sticky;top:0;z-index:4;padding:18px 28px 12px;border-bottom:1px solid #e0e0e3;background:#fff}
+  .detail-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:8px;flex-wrap:wrap}
+  .detail-head h1{font-size:18px;margin:0;flex:1;min-width:300px}
+  .pr-link{font-size:12px;color:#06c;text-decoration:none}
+  .pr-link:hover{text-decoration:underline}
+  .detail-meta{color:#666;font-size:12px;display:flex;gap:14px;flex-wrap:wrap}
+  .detail-meta a{color:#06c;text-decoration:none}
+  .detail-meta a:hover{text-decoration:underline}
+  /* Two-column body. Document-level scroll. The right column is
+     position:sticky so the trace tracks the viewport while the left
+     scrolls past it. */
+  .detail-body{display:grid;grid-template-columns:minmax(0, 1fr) minmax(420px, 560px);align-items:start}
+  @media (max-width: 1100px){
+    .detail-body{grid-template-columns:1fr}
+    .detail-right{border-left:0;border-top:1px solid #e0e0e3;position:static !important;max-height:none !important}
+  }
+  .detail-left{padding:20px 28px 40px;background:#fafafa;min-width:0}
+  /* Sticky right column. Header is ~80px so we offset by that and
+     constrain max-height so internal panes scroll, not the whole
+     thing eating the viewport. */
+  .detail-right{position:sticky;top:80px;display:flex;flex-direction:column;background:#fff;border-left:1px solid #e0e0e3;max-height:calc(100vh - 80px);overflow:hidden;min-width:0}
+  .right-tabs{display:flex;border-bottom:1px solid #e0e0e3;background:#fafafa;flex-shrink:0}
+  .right-tab{padding:10px 16px;border:0;background:transparent;font:inherit;font-size:12px;color:#666;cursor:pointer;border-bottom:2px solid transparent;text-transform:uppercase;letter-spacing:.04em;font-weight:600;display:flex;align-items:center;gap:6px}
+  .right-tab:hover{color:#222;background:#f0f0f7}
+  .right-tab.active{color:#222;border-bottom-color:#222;background:#fff}
+  .right-tab .count{font-size:10px;background:#ddd;color:#555;padding:1px 6px;border-radius:8px;font-weight:500;letter-spacing:0;text-transform:none}
+  .right-tab.active .count{background:#222;color:#fff}
+  .right-pane{flex:1;overflow-y:auto;padding:18px 22px 24px;min-height:0}
+  .right-pane.hidden{display:none}
+  .right-pane h3{display:flex;align-items:center;gap:8px}
+  .right-tag{font-size:10px;padding:2px 6px;border-radius:3px;background:#e0e0e3;color:#555;text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+  .section{background:#fff;border:1px solid #e0e0e3;border-radius:6px;padding:14px 18px;margin-bottom:14px}
+  .detail-right .section{box-shadow:none;background:#fff}
+  .section h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#666;font-weight:600}
+  .card-text,.drilldown-text{white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.55;color:#222}
+  .trace-item{border-left:3px solid #88a;background:#f0f0f7;padding:6px 10px;margin:6px 0;border-radius:3px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;white-space:pre-wrap;word-break:break-word}
+  .trace-call{border-left-color:#5b8}
+  .trace-return{border-left-color:#88a}
+  /* Full-trace renderer (one block per pydantic_ai message part). Each part
+     gets a kind-tinted border so the eye can scan a long trace fast. */
+  .trace-controls{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+  .arm-tabs{display:flex;gap:6px}
+  .arm-tab{padding:5px 12px;border:1px solid #ccc;background:#fff;border-radius:4px;font:inherit;font-size:12px;cursor:pointer;color:#444}
+  .arm-tab.active{background:#222;color:#fff;border-color:#222}
+  .arm-tab:disabled{opacity:.4;cursor:not-allowed}
+  .trace-toggle-all{margin-left:auto;font:inherit;font-size:11px;color:#06c;background:transparent;border:1px solid #ccc;border-radius:4px;padding:4px 10px;cursor:pointer}
+  .trace-toggle-all:hover{background:#f0f0f7}
+  .part{border-left:3px solid #ccc;background:#fff;border:1px solid #e8e8ea;border-left-width:3px;border-radius:4px;margin:8px 0;font-size:12px}
+  .part-system{border-left-color:#a89}
+  .part-user{border-left-color:#5a8}
+  .part-text{border-left-color:#aaa}
+  .part-tool-call{border-left-color:#5b8}
+  .part-tool-return{border-left-color:#88a}
+  .part-retry-prompt{border-left-color:#c80}
+  .part-head{padding:6px 10px;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;background:#fafafa;border-bottom:1px solid #eee}
+  .part-head:hover{background:#f0f0f7}
+  .part-kind{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.05em}
+  .part-name{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#222}
+  .part-bytes{margin-left:auto;font-size:10.5px;color:#888;font-family:ui-monospace,Menlo,monospace}
+  .part-toggle{font-size:11px;color:#888;width:14px;text-align:center}
+  .part-body{padding:10px 12px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;white-space:pre-wrap;word-break:break-word;background:#fff;line-height:1.5;max-height:600px;overflow-y:auto}
+  .part-body.collapsed{display:none}
+  .part-body pre{margin:0;font:inherit}
+  .trace-empty{color:#888;font-size:12px;font-style:italic;padding:10px 4px}
+  .label-form label{display:block;font-size:12px;color:#444;margin:8px 0 4px}
+  .label-form select,.label-form textarea{width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font:inherit;font-size:13px}
+  .label-form textarea{min-height:80px;resize:vertical}
+  .label-buttons{display:flex;gap:8px;margin-top:12px;align-items:center}
+  .label-buttons button{padding:8px 14px;border:0;border-radius:4px;background:#222;color:#fff;cursor:pointer;font:inherit;font-size:13px}
+  .label-buttons button.secondary{background:#fff;color:#444;border:1px solid #ccc}
+  .label-buttons button.danger{background:#c33;color:#fff}
+  .label-buttons button:disabled{opacity:.5;cursor:wait}
+  .label-buttons .status{font-size:12px;color:#888}
+  .err{color:#c00;font-size:12px;margin-top:6px}
+  .ok{color:#0a5;font-size:12px;margin-top:6px}
+</style></head>
+<body>
+<aside id="sidebar">
+  <div id="sidebar-head">
+    <h2>Agent runs</h2>
+    <a id="nav-link" href="/chat">Chat →</a>
+  </div>
+  <div id="runs-list"><div class="empty">Loading…</div></div>
+</aside>
+<main id="main">
+  <div id="empty-detail">Select a run on the left.</div>
+  <div id="detail" style="display:none"></div>
+</main>
+<script>
+const runsListEl = document.getElementById('runs-list');
+const detailEl = document.getElementById('detail');
+const emptyDetailEl = document.getElementById('empty-detail');
+let activeRunId = null;
+let runs = [];
+
+async function authFetch(url, opts){
+  const r = await fetch(url, opts);
+  if (r.status === 401) { window.location.href = '/login'; throw new Error('redirecting to login'); }
+  return r;
+}
+
+function fmtTime(ts){
+  const d = new Date(ts * 1000);
+  return d.toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+
+function fmtCost(c){ return c == null ? '' : '$' + c.toFixed(3); }
+function fmtDuration(s){ return s == null ? '' : s.toFixed(1) + 's'; }
+
+function verdictBadgeClass(v){
+  return 'badge badge-' + (v || 'blocked').toLowerCase();
+}
+
+function renderRunsList(){
+  runsListEl.innerHTML = '';
+  if (!runs.length) {
+    runsListEl.innerHTML = '<div class="empty">No runs yet. They\\'ll appear here as the agent reviews PRs.</div>';
+    return;
+  }
+  for (const r of runs) {
+    const row = document.createElement('div');
+    row.className = 'run-row' + (r.run_id === activeRunId ? ' active' : '');
+    row.dataset.id = r.run_id;
+    const top = document.createElement('div');
+    top.className = 'run-top';
+    const badge = document.createElement('span');
+    badge.className = verdictBadgeClass(r.verdict);
+    badge.textContent = r.emoji + ' ' + r.score + '/5';
+    const scope = document.createElement('span');
+    scope.className = 'scope-tag scope-' + r.source;
+    scope.textContent = r.source;
+    const labelTag = document.createElement('span');
+    labelTag.className = 'label-tag label-' + (r.human_label || 'empty');
+    labelTag.textContent = r.human_label || 'unlabeled';
+    top.appendChild(badge);
+    top.appendChild(scope);
+    top.appendChild(labelTag);
+    const title = document.createElement('div');
+    title.className = 'run-title';
+    title.textContent = '#' + r.pr_number + ' ' + r.pr_title;
+    const meta = document.createElement('div');
+    meta.className = 'run-meta';
+    const parts = [r.pr_author, fmtTime(r.ts)];
+    if (r.duration_s != null) parts.push(fmtDuration(r.duration_s));
+    if (r.cost_usd != null) parts.push(fmtCost(r.cost_usd));
+    meta.textContent = parts.join(' · ');
+    row.appendChild(top);
+    row.appendChild(title);
+    row.appendChild(meta);
+    row.addEventListener('click', () => loadDetail(r.run_id));
+    runsListEl.appendChild(row);
+  }
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+function renderTrace(trace){
+  if (!trace || !trace.length) return '<em style="color:#999">No tool calls recorded.</em>';
+  return trace.map(t => {
+    const cls = t.kind === 'call' ? 'trace-call' : 'trace-return';
+    const arrow = t.kind === 'call' ? '→' : '←';
+    const body = t.kind === 'call'
+      ? t.tool + '(' + JSON.stringify(t.args) + ')'
+      : t.tool + ' returned: ' + (t.preview || '');
+    return '<div class="trace-item ' + cls + '">' + arrow + ' ' + escapeHtml(body) + '</div>';
+  }).join('');
+}
+
+// --- Full pydantic_ai message renderer ---------------------------------------
+// Same shape Logfire receives via `pydantic_ai.all_messages`. Each pydantic_ai
+// `ModelMessage` is `{kind: "request"|"response", parts: [...]}` — we flatten
+// and render one collapsible block per part. The shape comes verbatim from
+// `ModelMessagesTypeAdapter.dump_python(..., mode='json')` so the renderer
+// stays valid as long as pydantic_ai's schema does.
+
+function fmtBytes(n){
+  if (n < 1024) return n + 'B';
+  if (n < 1024*1024) return (n/1024).toFixed(1) + 'KB';
+  return (n/1024/1024).toFixed(2) + 'MB';
+}
+
+function prettyJson(value){
+  // Tool args sometimes come in as a JSON-string (the pydantic_ai schema
+  // permits both `dict` and `str` for ToolCallPart.args). Try to parse so
+  // the tree displays nested keys instead of one giant escaped line.
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try { return JSON.stringify(JSON.parse(trimmed), null, 2); }
+      catch (e) { /* fall through */ }
+    }
+    return value;
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+function renderPart(part, idx, armId){
+  const kind = part.part_kind || part.kind || 'unknown';
+  let label = '';
+  let body = '';
+  // Coarse-grained dispatch on `part_kind`. Anything we don't recognize
+  // falls through to the JSON-dump branch below — keeps the renderer
+  // compatible with future pydantic_ai part types without code changes.
+  if (kind === 'system-prompt') {
+    label = 'system';
+    body = part.content || '';
+  } else if (kind === 'user-prompt') {
+    label = 'user';
+    body = typeof part.content === 'string' ? part.content : prettyJson(part.content);
+  } else if (kind === 'tool-call') {
+    label = 'tool_call · ' + (part.tool_name || '?');
+    body = prettyJson(part.args);
+  } else if (kind === 'tool-return') {
+    label = 'tool_return · ' + (part.tool_name || '?');
+    body = prettyJson(part.content);
+  } else if (kind === 'retry-prompt') {
+    label = 'retry · ' + (part.tool_name || '');
+    body = prettyJson(part.content);
+  } else if (kind === 'text') {
+    label = 'assistant text';
+    body = part.content || '';
+  } else {
+    label = kind;
+    body = prettyJson(part);
+  }
+  const bytes = body ? body.length : 0;
+  const cls = 'part part-' + kind;
+  // Every part collapsed by default. Use the "Expand all" button or
+  // click a header to drill in. Old behavior (everything expanded
+  // except system-prompt) overflowed the column on long tool returns.
+  return (
+    '<div class="' + cls + '">' +
+      '<div class="part-head" data-arm="' + armId + '" data-idx="' + idx + '">' +
+        '<span class="part-toggle">▶</span>' +
+        '<span class="part-kind">' + escapeHtml(kind) + '</span>' +
+        '<span class="part-name">' + escapeHtml(label) + '</span>' +
+        '<span class="part-bytes">' + fmtBytes(bytes) + '</span>' +
+      '</div>' +
+      '<div class="part-body collapsed"><pre>' + escapeHtml(body) + '</pre></div>' +
+    '</div>'
+  );
+}
+
+function renderArm(messages, armId){
+  if (!messages || !messages.length) {
+    return '<div class="trace-empty">No messages captured for this arm. (Pre-' +
+           'instrumentation record, or the agent didn\\'t run for this arm.)</div>';
+  }
+  // Flatten pydantic_ai `ModelMessage[].parts[]` into one ordered list of parts.
+  const flat = [];
+  for (const msg of messages) {
+    for (const part of (msg.parts || [])) {
+      flat.push(part);
+    }
+  }
+  return flat.map((p, i) => renderPart(p, i, armId)).join('');
+}
+
+// Wire up the part-head click handler once at module scope. We use event
+// delegation so freshly-rendered parts (after switching arms) still toggle
+// without re-binding.
+document.addEventListener('click', (e) => {
+  const head = e.target.closest && e.target.closest('.part-head');
+  if (!head) return;
+  const body = head.nextElementSibling;
+  if (!body) return;
+  body.classList.toggle('collapsed');
+  const toggle = head.querySelector('.part-toggle');
+  if (toggle) toggle.textContent = body.classList.contains('collapsed') ? '▶' : '▼';
+});
+
+let activeArm = 'triage';
+
+function switchArm(arm, rec){
+  activeArm = arm;
+  const messages = (rec.messages && rec.messages[arm]) || [];
+  const armBox = document.getElementById('arm-body');
+  if (armBox) armBox.innerHTML = renderArm(messages, arm);
+  for (const btn of document.querySelectorAll('.arm-tab')) {
+    btn.classList.toggle('active', btn.dataset.arm === arm);
+  }
+}
+
+function logfireLink(rec){
+  if (!rec.logfire_trace_id) return '';
+  // Generic Logfire trace deep-link. Self-host users can set their own
+  // base via window.__LOGFIRE_BASE__ if they ever wire it through; the
+  // default "#" anchor is a safe no-op for the demo.
+  const base = window.__LOGFIRE_BASE__ || '#';
+  return ' · <a href="' + base + 'traces/' + rec.logfire_trace_id + '" target="_blank">Logfire trace ↗</a>';
+}
+
+function renderDetail(rec){
+  emptyDetailEl.style.display = 'none';
+  detailEl.style.display = 'block';
+  const card = rec.card || {};
+  const drilldown = renderDrilldownText(rec);
+
+  const tokenLine = (rec.tokens_in || rec.tokens_out)
+    ? ' · ' + (rec.tokens_in || 0).toLocaleString() + ' in / ' + (rec.tokens_out || 0).toLocaleString() + ' out'
+    : '';
+
+  const triageMsgs = (rec.messages && rec.messages.triage) || [];
+  const patternMsgs = (rec.messages && rec.messages.pattern) || [];
+
+  // Stripe-style layout: full-width header on top, two columns below.
+  // Left  = human-facing summary (card, drilldown, tool-trace skim).
+  // Right = tabbed: "Trace" (raw pydantic_ai messages, expandable) and
+  //         "Annotation" (label form + history). Tabs let the grader
+  //         toggle between reading what the agent did and recording
+  //         their judgment without scrolling between sections.
+  const labelTagText = rec.human_label || 'unlabeled';
+  detailEl.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-head">
+        <h1>#${rec.pr_number} ${escapeHtml(rec.pr_title)}</h1>
+        <span class="${verdictBadgeClass(card.verdict)}">${card.emoji || ''} ${card.score}/5 ${card.verdict || ''}</span>
+      </div>
+      <div class="detail-meta">
+        <span>by ${escapeHtml(rec.pr_author)}</span>
+        <a href="${escapeHtml(rec.pr_url)}" target="_blank" class="pr-link">View on GitHub ↗</a>
+        <span>${fmtTime(rec.ts)} · ${fmtDuration(rec.duration_s)} · ${fmtCost(rec.cost_usd)}${tokenLine}</span>
+        <span>${escapeHtml(rec.model_name || '')}${logfireLink(rec)}</span>
+      </div>
+    </div>
+    <div class="detail-body">
+      <div class="detail-left">
+        <div class="section">
+          <h3>Card (what posted to Slack)</h3>
+          <div class="card-text">${escapeHtml(renderCardText(card))}</div>
+        </div>
+        <div class="section">
+          <h3>Drill-down</h3>
+          <div class="drilldown-text">${escapeHtml(drilldown)}</div>
+        </div>
+        <div class="section">
+          <h3>Tool trace (skim)</h3>
+          ${renderTrace(rec.tool_trace)}
+        </div>
+      </div>
+      <div class="detail-right">
+        <div class="right-tabs">
+          <button class="right-tab active" data-rtab="trace" type="button">
+            <span class="right-tag">Raw</span>Trace
+          </button>
+          <button class="right-tab" data-rtab="annotation" type="button">
+            Annotation
+            <span class="count label-${rec.human_label || 'empty'}">${escapeHtml(labelTagText)}</span>
+          </button>
+        </div>
+        <div class="right-pane" data-pane="trace">
+          <div class="trace-controls">
+            <div class="arm-tabs">
+              <button class="arm-tab active" data-arm="triage" type="button">Triage (${triageMsgs.length} msgs)</button>
+              <button class="arm-tab" data-arm="pattern" type="button" ${patternMsgs.length === 0 ? 'disabled' : ''}>Pattern (${patternMsgs.length} msgs)</button>
+            </div>
+            <button class="trace-toggle-all" id="toggle-all-btn" type="button">Expand all</button>
+          </div>
+          <div id="arm-body">${renderArm(triageMsgs, 'triage')}</div>
+        </div>
+        <div class="right-pane hidden" data-pane="annotation">
+          <div class="section label-form">
+            <h3>Your verdict</h3>
+            <label for="lbl">Label</label>
+            <select id="lbl">
+              <option value="">— unlabeled —</option>
+              <option value="ready"${rec.human_label === 'ready' ? ' selected' : ''}>ready (agent was right if it said READY)</option>
+              <option value="not_ready"${rec.human_label === 'not_ready' ? ' selected' : ''}>not_ready (PR is not ready for human review)</option>
+            </select>
+            <label for="notes">Notes (what would you have said? where does the agent disagree?)</label>
+            <textarea id="notes" placeholder="e.g. Agreed with READY but reviewer should call out the perf cost in line 42.">${escapeHtml(rec.human_notes || '')}</textarea>
+            <div class="label-buttons">
+              <button id="save-btn">Save label</button>
+              <button id="graduate-btn" class="secondary" title="Promote to eval_prs(set_name='graduated')">Graduate to eval set →</button>
+              <span id="status" class="status"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('save-btn').addEventListener('click', () => saveLabel(rec.run_id));
+  document.getElementById('graduate-btn').addEventListener('click', () => graduate(rec.run_id));
+  for (const btn of document.querySelectorAll('.arm-tab')) {
+    btn.addEventListener('click', () => switchArm(btn.dataset.arm, rec));
+  }
+  for (const btn of document.querySelectorAll('.right-tab')) {
+    btn.addEventListener('click', () => switchRightTab(btn.dataset.rtab));
+  }
+  document.getElementById('toggle-all-btn').addEventListener('click', toggleAllParts);
+  activeArm = 'triage';
+}
+
+// Toggle every part-body in the active arm. Tracks state on the button
+// label so the next click flips. Only touches the currently-rendered
+// arm — switching arms re-renders fresh (collapsed) parts anyway.
+function toggleAllParts(){
+  const btn = document.getElementById('toggle-all-btn');
+  const expand = btn.textContent.startsWith('Expand');
+  const bodies = document.querySelectorAll('#arm-body .part-body');
+  for (const body of bodies) {
+    body.classList.toggle('collapsed', !expand);
+    const toggle = body.previousElementSibling && body.previousElementSibling.querySelector('.part-toggle');
+    if (toggle) toggle.textContent = expand ? '▼' : '▶';
+  }
+  btn.textContent = expand ? 'Collapse all' : 'Expand all';
+}
+
+function switchRightTab(name){
+  for (const btn of document.querySelectorAll('.right-tab')) {
+    btn.classList.toggle('active', btn.dataset.rtab === name);
+  }
+  for (const pane of document.querySelectorAll('.right-pane')) {
+    pane.classList.toggle('hidden', pane.dataset.pane !== name);
+  }
+}
+
+function renderCardText(card){
+  // Mirror render_card() server-side. Keeping this deterministic in JS
+  // avoids a round-trip just to render preformatted text.
+  const size = card.size_line ? '_' + card.size_line + '_\\n\\n' : '';
+  const failing = card.failing_line ? card.failing_line + '\\n' : '';
+  return '*Triage Summary*\\n' + (card.summary || '') + '\\n\\n' +
+    size +
+    '*Merge Confidence: ' + card.score + '/5*  ' + (card.emoji || '') + ' ' + (card.verdict || '') + '\\n' +
+    failing +
+    (card.verdict_one_liner || '') + '\\n\\n' +
+    (card.justification || '');
+}
+
+function renderDrilldownText(rec){
+  // Mirror render_drilldown(). Best-effort — used as a quick visual; the
+  // canonical drilldown is what posted to Slack.
+  const t = rec.triage || {};
+  const p = rec.pattern || {};
+  const lines = ['*Drill-down*'];
+  if (t.has_merge_conflicts === true) {
+    lines.push('\\n_Merge state_');
+    lines.push('  • merge conflicts — branch must be rebased before it can merge');
+  }
+  const r = t.failure_rationales || {};
+  function bullets(label, names){
+    if (!names || !names.length) return;
+    lines.push('\\n_' + label + '_');
+    for (const n of names) {
+      const why = r[n] || '';
+      lines.push('  • ' + n + (why ? ' — ' + why : ''));
+    }
+  }
+  bullets('PR-related failures', t.pr_related_failures);
+  bullets('Unrelated failures', t.unrelated_failures);
+  bullets('Policy / meta failures (zero-penalty)', t.policy_meta_failures);
+  bullets('Still running', t.running_checks);
+  if (p.findings && p.findings.length) {
+    lines.push('\\n_Pattern findings_');
+    for (const f of p.findings) {
+      const risk = f.risk && f.risk !== 'low' ? ' risk=' + f.risk : '';
+      lines.push('  • [' + f.severity + risk + '] `' + f.file + '` — ' + f.rationale + ' (source: ' + f.source + ', ' + f.citation + ')');
+    }
+  }
+  if (p.tech_debt && p.tech_debt.length) {
+    lines.push('\\n_Tech debt (FYI, not blocking)_');
+    for (const td of p.tech_debt) {
+      lines.push('  • `' + td.code_path + '` vs `' + td.doc_path + '` — ' + td.note);
+    }
+  }
+  if (lines.length === 1) lines.push('Nothing to drill into. Card has the full story.');
+  return lines.join('\\n');
+}
+
+async function loadDetail(runId){
+  activeRunId = runId;
+  history.replaceState(null, '', '/runs#' + runId);
+  renderRunsList();
+  try {
+    const r = await authFetch('/runs/api/runs/' + runId);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const rec = await r.json();
+    renderDetail(rec);
+  } catch (err) {
+    detailEl.style.display = 'block';
+    emptyDetailEl.style.display = 'none';
+    detailEl.innerHTML = '<div class="err">Failed to load: ' + escapeHtml(String(err)) + '</div>';
+  }
+}
+
+async function saveLabel(runId){
+  const status = document.getElementById('status');
+  const btn = document.getElementById('save-btn');
+  btn.disabled = true;
+  status.className = 'status';
+  status.textContent = 'Saving…';
+  const lbl = document.getElementById('lbl').value || null;
+  const notes = document.getElementById('notes').value || null;
+  try {
+    const r = await authFetch('/runs/api/runs/' + runId + '/label', {
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({human_label: lbl, human_notes: notes}),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + (await r.text()));
+    await refresh();
+    status.className = 'status ok';
+    status.textContent = 'Saved.';
+  } catch (err) {
+    status.className = 'status err';
+    status.textContent = String(err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function graduate(runId){
+  const status = document.getElementById('status');
+  const btn = document.getElementById('graduate-btn');
+  status.className = 'status';
+  status.textContent = '';
+  if (!confirm('Append this PR to tests/eval/pr_set_v3.json so the next eval run grades against it?')) return;
+  btn.disabled = true;
+  status.textContent = 'Graduating…';
+  try {
+    const r = await authFetch('/runs/api/runs/' + runId + '/graduate', {method:'POST'});
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error('HTTP ' + r.status + ': ' + t);
+    }
+    const data = await r.json();
+    status.className = 'status ok';
+    status.textContent = 'Added. pr_set_v3.json now has ' + data.total_prs + ' PR(s).';
+  } catch (err) {
+    status.className = 'status err';
+    status.textContent = String(err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function refresh(){
+  const r = await authFetch('/runs/api/runs');
+  runs = await r.json();
+  renderRunsList();
+}
+
+(async () => {
+  await refresh();
+  const hash = window.location.hash.replace(/^#/, '');
+  if (hash && runs.find(r => r.run_id === hash)) {
+    loadDetail(hash);
+  } else if (runs.length) {
+    loadDetail(runs[0].run_id);
+  }
+})();
+</script>
+</body></html>"""
+
+
+@app.get(
+    "/runs",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_login)],
+)
+async def runs_ui() -> str:
+    return RUNS_HTML
 
 
 # --- Login endpoints -----------------------------------------------------------
