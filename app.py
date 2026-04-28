@@ -22,12 +22,14 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic_ai import Agent, ModelRetry
+from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
+from pydantic_ai.tools import ToolDefinition
 
 import slack_handler
+from plugins import TOOL_FILTER_PLUGINS, ChatDeps
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -1641,7 +1643,22 @@ CHAT_SYSTEM_PROMPT = (
     "applies."
 )
 
-chat_agent = Agent(model, system_prompt=CHAT_SYSTEM_PROMPT, output_type=str)
+async def _filter_chat_tools(
+    ctx: RunContext[ChatDeps],
+    tools: list[ToolDefinition],
+) -> list[ToolDefinition]:
+    for plugin in TOOL_FILTER_PLUGINS:
+        tools = await plugin.filter(ctx.deps, tools)
+    return tools
+
+
+chat_agent = Agent(
+    model,
+    system_prompt=CHAT_SYSTEM_PROMPT,
+    output_type=str,
+    deps_type=ChatDeps,
+    prepare_tools=_filter_chat_tools,
+)
 
 
 @chat_agent.system_prompt(dynamic=True)
@@ -2555,7 +2572,7 @@ async def delete_thread(thread_id: str) -> dict:
     response_model=ChatResponse,
     dependencies=[Depends(require_login)],
 )
-async def chat_api(req: ChatRequest) -> ChatResponse:
+async def chat_api(req: ChatRequest, request: Request) -> ChatResponse:
     if not req.message.strip():
         raise HTTPException(400, "message is empty")
 
@@ -2574,8 +2591,12 @@ async def chat_api(req: ChatRequest) -> ChatResponse:
         thread["title"] = req.title
 
     history = thread["history"]
+    # AUTH_ENABLED=False means require_login is a no-op and session["user"]
+    # is unset — give plugins a stable sentinel instead of None.
+    web_user = request.session.get("user") or ("dev-local" if not AUTH_ENABLED else None)
+    deps = ChatDeps(user_id=web_user)
     try:
-        result = await chat_agent.run(req.message, message_history=history)
+        result = await chat_agent.run(req.message, message_history=history, deps=deps)
         output = result.output
         new_msgs = list(result.all_messages())
     except Exception as e:
