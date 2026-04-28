@@ -72,11 +72,13 @@ def _redirect(script_name: str, tool_name: str) -> str:
     )
 
 
-# Override the "emit prose" steps in each upstream SKILL. The skills are a git
-# submodule pointing at BerriAI/pr-review-agent-skills, so we can't edit them
-# directly without forking. These prefixes are appended *after* the SKILL text
-# so the model reads them as the most recent (and overriding) instruction
-# before producing its final structured output.
+# Override the "emit prose" steps in each upstream SKILL. The skills are
+# vendored from BerriAI/pr-review-agent-skills; we keep them byte-identical
+# to upstream so updates can be re-vendored cleanly, which means edits go
+# here as appended overrides rather than in the SKILL files themselves.
+# These prefixes are appended *after* the SKILL text so the model reads
+# them as the most recent (and overriding) instruction before producing
+# its final structured output.
 #
 # Single source of truth for the prose-formatting rule. Both override blocks
 # reference this so the wording can't drift between blocks. The validator

@@ -1,0 +1,12 @@
+{
+  "name": "litellm-pr-reviewer",
+  "version": "1.0.0",
+  "description": "Triage BerriAI/litellm pull requests: classify failing checks as PR-related vs infra, factor in Greptile score and CircleCI presence, and emit a ready/not-ready verdict with a 5-item checklist.",
+  "author": {
+    "name": "BerriAI",
+    "url": "https://github.com/BerriAI"
+  },
+  "homepage": "https://github.com/BerriAI/pr-review-agent-skills",
+  "license": "MIT",
+  "keywords": ["pr-review", "github", "ci", "litellm", "triage"]
+}
