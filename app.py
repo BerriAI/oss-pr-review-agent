@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -15,18 +16,6 @@ log = logging.getLogger(__name__)
 
 SHIN_URL = os.environ.get("SHIN_AGENT_URL", "https://shin-pr-review-agent.onrender.com")
 SHIN_API_KEY = os.environ.get("SHIN_AGENT_API_KEY", "key1")
-
-
-@asynccontextmanager
-async def _lifespan(_app: FastAPI):
-    yield
-
-
-app = FastAPI(lifespan=_lifespan)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "dev"),
-)
 
 
 async def review_pr(
@@ -56,6 +45,19 @@ async def review_pr(
     )
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    if slack_handler.is_enabled():
+        asyncio.create_task(slack_handler.startup_scan(review_pr))
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SESSION_SECRET", "dev"),
+)
+
 slack_handler.mount(app, on_pr_review=review_pr)
 
 
@@ -77,7 +79,7 @@ async def login_get():
 
 
 @app.post("/login")
-async def login_post(request: Request):
+async def login_post(_request: Request):
     return RedirectResponse("/", status_code=303)
 
 

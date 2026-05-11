@@ -6,10 +6,12 @@ about Slack channels, threads, or message subtypes.
 Public surface:
 - `is_enabled()` - True iff SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET are set
 - `mount(fastapi_app, on_pr_review)` - registers /slack/events and event handlers.
-  `on_pr_review(pr_url, channel, thread_ts)` is invoked (via asyncio.create_task)
-  whenever a user sends us a PR URL via @-mention or DM.
+  `on_pr_review(pr_url, channel, thread_ts, message_text)` is invoked (via asyncio.create_task)
+  whenever a user sends us a PR URL via @-mention, DM, or channel message.
+- `startup_scan(on_pr_review)` - scans last 20 messages in all bot channels for
+  unreviewed PRs and triggers reviews. Call from app lifespan.
 - `bolt` / `request_handler` - the underlying Bolt app + FastAPI adapter, or
-  None if Slack creds aren't configured. Exposed mainly so tests can patch them.
+  None if Slack creds aren't configured.
 """
 
 from __future__ import annotations
@@ -27,9 +29,6 @@ log = logging.getLogger("litellm-bot.slack")
 PR_URL_RE = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 BOT_MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
 
-# How many messages back in a thread we'll scan for a PR URL. Slack's default
-# page size is 28; 50 covers any reasonable "PR in the OP, @-mention much
-# later" case without a second pagination round-trip.
 THREAD_LOOKBACK_LIMIT = 50
 
 ReviewCallback = Callable[[str, str, str, Optional[str]], Awaitable[None]]
@@ -55,16 +54,6 @@ def is_enabled() -> bool:
 
 
 async def _find_pr_url_in_thread(channel: str, thread_ts: str) -> Optional[str]:
-    """Scan a Slack thread (parent + replies) for a GitHub PR URL.
-
-    Called for every in-thread @-mention so we pick up the PR URL whether it
-    was in the OP, an earlier reply, or the mention itself. Typical flow:
-    user pastes a PR link in the OP, then later replies "@bot review this".
-
-    Returns the first PR URL found, or None. Silently returns None on API
-    errors (e.g. missing channels:history scope) so the caller can still
-    fall back to the "give me a URL" prompt.
-    """
     if bolt is None:
         return None
     try:
@@ -75,8 +64,7 @@ async def _find_pr_url_in_thread(channel: str, thread_ts: str) -> Optional[str]:
         )
     except Exception as e:
         log.warning(
-            "conversations_replies failed channel=%s ts=%s err=%s "
-            "(bot may need channels:history / groups:history / im:history scope)",
+            "conversations_replies failed channel=%s ts=%s err=%s",
             channel,
             thread_ts,
             e,
@@ -90,26 +78,70 @@ async def _find_pr_url_in_thread(channel: str, thread_ts: str) -> Optional[str]:
     return None
 
 
-def _mount_handlers(on_pr_review: ReviewCallback) -> None:
-    """Attach `app_mention` + DM `message` handlers to the Bolt app.
+async def _bot_already_replied(channel: str, thread_ts: str, bot_id: str) -> bool:
+    if bolt is None:
+        return False
+    try:
+        resp = await bolt.client.conversations_replies(
+            channel=channel,
+            ts=thread_ts,
+            limit=50,
+        )
+        return any(m.get("bot_id") == bot_id for m in resp.get("messages", []))
+    except Exception:
+        return False
 
-    Split out so the registration is testable without spinning up FastAPI.
-    """
-    assert bolt is not None  # caller checked is_enabled()
+
+async def startup_scan(on_pr_review: ReviewCallback) -> None:
+    if bolt is None:
+        return
+    try:
+        auth = await bolt.client.auth_test()
+        bot_id = auth.get("bot_id", "")
+
+        channels_resp = await bolt.client.conversations_list(
+            types="public_channel,private_channel",
+            exclude_archived=True,
+            limit=200,
+        )
+        channels = [c for c in channels_resp.get("channels", []) if c.get("is_member")]
+        log.info("startup_scan checking %d channels", len(channels))
+
+        for channel in channels:
+            channel_id = channel["id"]
+            try:
+                history = await bolt.client.conversations_history(
+                    channel=channel_id,
+                    limit=20,
+                )
+            except Exception as e:
+                log.warning("startup_scan history failed channel=%s err=%s", channel_id, e)
+                continue
+
+            for msg in history.get("messages", []):
+                if msg.get("bot_id") or msg.get("subtype"):
+                    continue
+                match = PR_URL_RE.search(msg.get("text", "") or "")
+                if not match:
+                    continue
+                pr_url = match.group(0)
+                msg_ts = msg["ts"]
+                if await _bot_already_replied(channel_id, msg_ts, bot_id):
+                    log.info("startup_scan skip already_reviewed url=%s", pr_url)
+                    continue
+                log.info("startup_scan trigger url=%s channel=%s", pr_url, channel_id)
+                asyncio.create_task(on_pr_review(pr_url, channel_id, msg_ts, None))
+    except Exception as e:
+        log.error("startup_scan failed err=%s", e)
+
+
+def _mount_handlers(on_pr_review: ReviewCallback) -> None:
+    assert bolt is not None
 
     async def handle_mention(event, say) -> None:
-        # Two cases we handle differently:
-        #   1. Mention in a thread → scan the whole thread for a PR URL.
-        #      (The user usually pastes the URL in the OP and then @-mentions
-        #      us with "please review this".)
-        #   2. Mention at top level in a channel / DM → only look at the
-        #      mention text itself. Grabbing channel history would be both
-        #      noisy (random old PR URLs) and a bigger scope ask.
         channel = event["channel"]
         parent_ts = event.get("thread_ts")
         in_thread = parent_ts is not None
-        # Where to post the reply: existing thread if any, else start one off
-        # the mention itself.
         reply_thread_ts = parent_ts or event["ts"]
 
         if in_thread:
@@ -126,7 +158,7 @@ def _mount_handlers(on_pr_review: ReviewCallback) -> None:
             return
 
         await say(
-            text=f":eyes: reviewing {pr_url} (CI triage + pattern conformance)...",
+            text=f":eyes: reviewing {pr_url}...",
             thread_ts=reply_thread_ts,
         )
         cleaned_text = BOT_MENTION_RE.sub("", event.get("text", "") or "").strip()
@@ -138,37 +170,38 @@ def _mount_handlers(on_pr_review: ReviewCallback) -> None:
             message_text = None
         asyncio.create_task(on_pr_review(pr_url, channel, reply_thread_ts, message_text))
 
-    async def handle_dm(event, say) -> None:
-        # Slack also delivers the bot's own messages and message_changed/deleted
-        # subtypes as message events; ignore those so we don't loop on ourselves.
+    async def handle_message(event, say) -> None:
         if event.get("bot_id") or event.get("subtype"):
             return
-        if event.get("channel_type") != "im":
-            return
-        await handle_mention(event, say)
+        channel_type = event.get("channel_type", "")
+        if channel_type == "im":
+            await handle_mention(event, say)
+        elif channel_type in ("channel", "group", "mpim"):
+            match = PR_URL_RE.search(event.get("text", "") or "")
+            if not match:
+                return
+            pr_url = match.group(0)
+            channel = event["channel"]
+            msg_ts = event["ts"]
+            await say(text=f":eyes: reviewing {pr_url}...", thread_ts=msg_ts)
+            cleaned_text = BOT_MENTION_RE.sub("", event.get("text", "") or "").strip()
+            asyncio.create_task(
+                on_pr_review(pr_url, channel, msg_ts, cleaned_text or None)
+            )
 
     bolt.event("app_mention")(handle_mention)
-    bolt.event("message")(handle_dm)
+    bolt.event("message")(handle_message)
 
-    # Expose at module scope so tests (and app.py, if it ever needs to) can
-    # call them directly without faking a Slack event through Bolt.
-    global handle_mention_fn, handle_dm_fn  # noqa: PLW0603
+    global handle_mention_fn, handle_message_fn  # noqa: PLW0603
     handle_mention_fn = handle_mention
-    handle_dm_fn = handle_dm
+    handle_message_fn = handle_message
 
 
-# Set by `_mount_handlers`. None until `mount()` runs (i.e. when Slack creds
-# are missing, or before app startup). Tests call `_mount_handlers` directly to
-# populate these without needing FastAPI.
 handle_mention_fn: Optional[Callable[..., Awaitable[None]]] = None
-handle_dm_fn: Optional[Callable[..., Awaitable[None]]] = None
+handle_message_fn: Optional[Callable[..., Awaitable[None]]] = None
 
 
 def mount(fastapi_app: FastAPI, on_pr_review: ReviewCallback) -> None:
-    """Register Slack event handlers + the /slack/events HTTP route.
-
-    No-op if Slack creds aren't configured (so local /chat dev still works).
-    """
     if not is_enabled():
         return
 
