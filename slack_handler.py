@@ -25,13 +25,14 @@ from fastapi import FastAPI, Request
 log = logging.getLogger("litellm-bot.slack")
 
 PR_URL_RE = re.compile(r"https?://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
+BOT_MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
 
 # How many messages back in a thread we'll scan for a PR URL. Slack's default
 # page size is 28; 50 covers any reasonable "PR in the OP, @-mention much
 # later" case without a second pagination round-trip.
 THREAD_LOOKBACK_LIMIT = 50
 
-ReviewCallback = Callable[[str, str, str], Awaitable[None]]
+ReviewCallback = Callable[[str, str, str, Optional[str]], Awaitable[None]]
 
 bolt = None
 request_handler = None
@@ -128,7 +129,14 @@ def _mount_handlers(on_pr_review: ReviewCallback) -> None:
             text=f":eyes: reviewing {pr_url} (CI triage + pattern conformance)...",
             thread_ts=reply_thread_ts,
         )
-        asyncio.create_task(on_pr_review(pr_url, channel, reply_thread_ts))
+        cleaned_text = BOT_MENTION_RE.sub("", event.get("text", "") or "").strip()
+        if cleaned_text and pr_url in cleaned_text:
+            message_text = cleaned_text
+        elif cleaned_text:
+            message_text = f"{cleaned_text} {pr_url}"
+        else:
+            message_text = None
+        asyncio.create_task(on_pr_review(pr_url, channel, reply_thread_ts, message_text))
 
     async def handle_dm(event, say) -> None:
         # Slack also delivers the bot's own messages and message_changed/deleted
