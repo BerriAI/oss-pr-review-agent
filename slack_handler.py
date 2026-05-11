@@ -95,42 +95,27 @@ async def _bot_already_replied(channel: str, thread_ts: str, bot_id: str) -> boo
 async def startup_scan(on_pr_review: ReviewCallback) -> None:
     if bolt is None:
         return
+    channel_id = os.environ.get("SLACK_CHANNEL_ID")
+    if not channel_id:
+        log.info("startup_scan skipped: SLACK_CHANNEL_ID not set")
+        return
     try:
         auth = await bolt.client.auth_test()
         bot_id = auth.get("bot_id", "")
-
-        channels_resp = await bolt.client.conversations_list(
-            types="public_channel,private_channel",
-            exclude_archived=True,
-            limit=200,
-        )
-        channels = [c for c in channels_resp.get("channels", []) if c.get("is_member")]
-        log.info("startup_scan checking %d channels", len(channels))
-
-        for channel in channels:
-            channel_id = channel["id"]
-            try:
-                history = await bolt.client.conversations_history(
-                    channel=channel_id,
-                    limit=20,
-                )
-            except Exception as e:
-                log.warning("startup_scan history failed channel=%s err=%s", channel_id, e)
+        history = await bolt.client.conversations_history(channel=channel_id, limit=20)
+        for msg in history.get("messages", []):
+            if msg.get("bot_id") or msg.get("subtype"):
                 continue
-
-            for msg in history.get("messages", []):
-                if msg.get("bot_id") or msg.get("subtype"):
-                    continue
-                match = PR_URL_RE.search(msg.get("text", "") or "")
-                if not match:
-                    continue
-                pr_url = match.group(0)
-                msg_ts = msg["ts"]
-                if await _bot_already_replied(channel_id, msg_ts, bot_id):
-                    log.info("startup_scan skip already_reviewed url=%s", pr_url)
-                    continue
-                log.info("startup_scan trigger url=%s channel=%s", pr_url, channel_id)
-                asyncio.create_task(on_pr_review(pr_url, channel_id, msg_ts, None))
+            match = PR_URL_RE.search(msg.get("text", "") or "")
+            if not match:
+                continue
+            pr_url = match.group(0)
+            msg_ts = msg["ts"]
+            if await _bot_already_replied(channel_id, msg_ts, bot_id):
+                log.info("startup_scan skip already_reviewed url=%s", pr_url)
+                continue
+            log.info("startup_scan trigger url=%s channel=%s", pr_url, channel_id)
+            asyncio.create_task(on_pr_review(pr_url, channel_id, msg_ts, None))
     except Exception as e:
         log.error("startup_scan failed err=%s", e)
 
@@ -177,6 +162,9 @@ def _mount_handlers(on_pr_review: ReviewCallback) -> None:
         if channel_type == "im":
             await handle_mention(event, say)
         elif channel_type in ("channel", "group", "mpim"):
+            allowed = os.environ.get("SLACK_CHANNEL_ID")
+            if allowed and event.get("channel") != allowed:
+                return
             match = PR_URL_RE.search(event.get("text", "") or "")
             if not match:
                 return
