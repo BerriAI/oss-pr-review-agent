@@ -32,7 +32,7 @@ async def review_pr(
     output = None
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with httpx.AsyncClient(timeout=600) as client:
                 resp = await client.post(
                     f"{SHIN_URL}/chat/api",
                     json={"message": message},
@@ -60,7 +60,7 @@ async def review_pr(
         log.error("shin_empty_output url=%s retrying with explicit message", pr_url)
         output = None
         try:
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with httpx.AsyncClient(timeout=600) as client:
                 resp = await client.post(
                     f"{SHIN_URL}/chat/api",
                     json={"message": f"review this PR: {pr_url}"},
