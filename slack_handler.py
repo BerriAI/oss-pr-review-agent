@@ -159,9 +159,7 @@ def _mount_handlers(on_pr_review: ReviewCallback) -> None:
         if event.get("bot_id") or event.get("subtype"):
             return
         channel_type = event.get("channel_type", "")
-        if channel_type == "im":
-            await handle_mention(event, say)
-        elif channel_type in ("channel", "group", "mpim"):
+        if channel_type in ("channel", "group", "mpim"):
             allowed = os.environ.get("SLACK_CHANNEL_ID")
             if allowed and event.get("channel") != allowed:
                 return
