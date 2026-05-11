@@ -56,9 +56,26 @@ async def review_pr(
             log.error("shin_agent_error url=%s err=%s", pr_url, e)
             output = f":x: Review failed: {e}"
             break
-    await slack_handler.bolt.client.chat_postMessage(
-        channel=channel, thread_ts=thread_ts, text=output
-    )
+    if not output:
+        log.error("shin_empty_output url=%s retrying with explicit message", pr_url)
+        output = None
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                resp = await client.post(
+                    f"{SHIN_URL}/chat/api",
+                    json={"message": f"review this PR: {pr_url}"},
+                    headers={"Authorization": f"Bearer {SHIN_API_KEY}"},
+                )
+                resp.raise_for_status()
+                output = resp.json().get("output") or f":x: shin returned empty output for {pr_url}"
+        except Exception as e:
+            output = f":x: Review failed: {e}"
+    try:
+        await slack_handler.bolt.client.chat_postMessage(
+            channel=channel, thread_ts=thread_ts, text=output
+        )
+    except Exception as e:
+        log.error("slack_post_error url=%s err=%s", pr_url, e)
 
 
 @asynccontextmanager
