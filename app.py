@@ -4,6 +4,7 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
+from httpx import HTTPStatusError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -28,18 +29,33 @@ async def review_pr(
         log.error("review_pr called without Slack configured url=%s", pr_url)
         return
     message = message_text or f"review this PR: {pr_url}"
-    try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(
-                f"{SHIN_URL}/chat/api",
-                json={"message": message},
-                headers={"Authorization": f"Bearer {SHIN_API_KEY}"},
-            )
-            resp.raise_for_status()
-            output = resp.json().get("output", str(resp.json()))
-    except Exception as e:
-        log.error("shin_agent_error url=%s err=%s", pr_url, e)
-        output = f":x: Review failed: {e}"
+    output = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                resp = await client.post(
+                    f"{SHIN_URL}/chat/api",
+                    json={"message": message},
+                    headers={"Authorization": f"Bearer {SHIN_API_KEY}"},
+                )
+                resp.raise_for_status()
+                output = resp.json().get("output", str(resp.json()))
+                break
+        except (HTTPStatusError, httpx.TransportError) as e:
+            status = getattr(e, "response", None)
+            status_code = status.status_code if status else 0
+            if attempt < 2 and status_code in (0, 502, 503, 504):
+                wait = 10 * (attempt + 1)
+                log.warning("shin_retry attempt=%d url=%s err=%s waiting=%ds", attempt + 1, pr_url, e, wait)
+                await asyncio.sleep(wait)
+            else:
+                log.error("shin_agent_error url=%s err=%s", pr_url, e)
+                output = f":x: Review failed after {attempt + 1} attempt(s): {e}"
+                break
+        except Exception as e:
+            log.error("shin_agent_error url=%s err=%s", pr_url, e)
+            output = f":x: Review failed: {e}"
+            break
     await slack_handler.bolt.client.chat_postMessage(
         channel=channel, thread_ts=thread_ts, text=output
     )
