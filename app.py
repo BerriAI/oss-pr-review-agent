@@ -39,12 +39,21 @@ async def review_pr(
                     headers={"Authorization": f"Bearer {SHIN_API_KEY}"},
                 )
                 resp.raise_for_status()
-                output = resp.json().get("output", str(resp.json()))
+                try:
+                    output = resp.json().get("output", str(resp.json()))
+                    log.info("shin_output url=%s len=%d tail=%r", pr_url, len(output or ""), (output or "")[-100:])
+                except Exception as json_err:
+                    log.error("shin_json_error url=%s body=%r err=%s", pr_url, resp.text[:500], json_err)
+                    output = f":x: shin returned non-JSON response: {resp.text[:200]}"
                 break
+        except httpx.TimeoutException as e:
+            log.error("shin_timeout url=%s attempt=%d err=%s", pr_url, attempt + 1, e)
+            output = f":x: Review timed out after {attempt + 1} attempt(s) (shin took >600s): {e}"
+            break
         except (HTTPStatusError, httpx.TransportError) as e:
             status = getattr(e, "response", None)
             status_code = status.status_code if status else 0
-            if attempt < 2 and status_code in (0, 502, 503, 504):
+            if attempt < 2 and status_code in (502, 503, 504):
                 wait = 10 * (attempt + 1)
                 log.warning("shin_retry attempt=%d url=%s err=%s waiting=%ds", attempt + 1, pr_url, e, wait)
                 await asyncio.sleep(wait)
